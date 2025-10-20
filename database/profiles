@@ -1,0 +1,31 @@
+"id","full_name","subrole","role","phone","email","created_at","channel_manager_id","national_supervisor_id","supervisor_id","position","date_joined","zone"
+68,"Boubker Jerboui","Indirect retail","SFP",NULL,NULL,"2025-08-05 11:30:00.222807",NULL,NULL,NULL,"Channel manager",NULL,NULL
+40,"El Idrissi Ahmed","CE","CE","0644223460",NULL,"2025-08-05 11:43:10.410959",NULL,NULL,NULL,"Supervisor",NULL,"Casablanca Extra 1"
+72,"Khadija Goumri","CE","CE",NULL,NULL,"2025-08-05 11:43:10.410959",NULL,NULL,40,"Brand representatives",NULL,"Casablanca Extra 1"
+73,"Kawtar Hasan","CE","CE",NULL,NULL,"2025-08-05 11:43:10.410959",NULL,NULL,40,"Brand representatives",NULL,"Casablanca Extra 1"
+70,"Zouhair Zemmoura","Indirect retail","SFP",NULL,NULL,"2025-08-05 11:30:00.222807",NULL,NULL,NULL,"National supervisor",NULL,NULL
+71,"Kawtar Nahhal","CE","CE",NULL,NULL,"2025-08-05 11:43:10.410959",NULL,NULL,40,"Brand representatives",NULL,"Casablanca Extra 1"
+55,"abdellah belbaghdadi 
+","Indirect retail","SFP",NULL,NULL,"2025-07-15 14:50:41.323668",NULL,NULL,NULL,"Sales expert",NULL,NULL
+56,"ibtissam el guenaoui","Indirect retail","SFP",NULL,NULL,"2025-07-15 14:50:41.323668",NULL,NULL,NULL,"Sales expert",NULL,NULL
+57,"mohamed hamza bounit
+","Indirect retail","SFP",NULL,NULL,"2025-07-15 14:50:41.323668",NULL,NULL,NULL,"Sales expert",NULL,NULL
+58,"kaoutar mouchaouir
+","Indirect retail","SFP",NULL,NULL,"2025-07-15 14:50:41.323668",NULL,NULL,NULL,"Sales expert",NULL,NULL
+50,"fatima ezzahra frikis
+","Indirect retail","SFP",NULL,NULL,"2025-07-15 14:50:41.323668",NULL,NULL,NULL,"Sales expert",NULL,NULL
+48,"zouhair zemmoura","Indirect retail","SFP",NULL,NULL,"2025-07-15 15:40:42.318983",NULL,NULL,NULL,"National supervisor",NULL,NULL
+51,"fadwa el guenaoui","Indirect retail","SFP",NULL,NULL,"2025-07-15 14:50:41.323668",NULL,NULL,NULL,"Sales expert",NULL,NULL
+53,"manal monssif","Indirect retail","SFP",NULL,NULL,"2025-07-15 14:50:41.323668",NULL,NULL,NULL,"Sales expert",NULL,NULL
+54,"nouhaila elhamrity","Indirect retail","SFP","463745","nouhaila@@@","2025-07-15 14:50:41.323668",NULL,NULL,NULL,"Sales expert",NULL,NULL
+52,"nouhaila wannas","Indirect retail","SFP",NULL,NULL,"2025-07-15 14:50:41.323668",NULL,NULL,NULL,"Sales expert",NULL,NULL
+59,"Hicham El Solh","CE","CE",NULL,NULL,"2025-08-05 10:32:54.978406",NULL,NULL,38,"Brand representatives",NULL,"Casablanca Sud1"
+60,"Amina Abetti","CE","CE",NULL,NULL,"2025-08-05 10:32:54.978406",NULL,NULL,38,"Brand representatives",NULL,"Casablanca Sud1"
+61,"Iman Sardili","CE","CE",NULL,NULL,"2025-08-05 10:32:54.978406",NULL,NULL,38,"Brand representatives",NULL,"Casablanca Sud1"
+62,"Ali Wahbi","CE","CE",NULL,NULL,"2025-08-05 10:32:54.978406",NULL,NULL,38,"Brand representatives",NULL,"Casablanca Sud1"
+38,"Chaouch Samia","CE","CE","0607832824",NULL,"2025-08-05 11:08:06.878474",NULL,NULL,38,"Supervisor",NULL,"Casablanca Sud1"
+75,"Hind Chafaa","CE","CE",NULL,NULL,"2025-08-05 15:04:13.917701",NULL,NULL,79,"Brand representatives",NULL,"Casablanca Extra 2"
+76,"Ahmed Chaouki","CE","CE",NULL,NULL,"2025-08-05 15:04:13.917701",NULL,NULL,79,"Brand representatives",NULL,"Casablanca Extra 2"
+77,"Aya El Mamouny","CE","CE",NULL,NULL,"2025-08-05 15:04:13.917701",NULL,NULL,79,"Brand representatives",NULL,"Casablanca Extra 2"
+79,"Saad Rajy","CE","CE","0687449956",NULL,"2025-08-05 15:04:13.917701",NULL,NULL,NULL,"Supervisor",NULL,"Casablanca Extra 2"
+78,"Chaimae Hemdaz","CE","CE",NULL,NULL,"2025-08-05 15:04:13.917701",NULL,NULL,79,"Brand representatives",NULL,"Casablanca Extra 2"

@@ -1,0 +1,15 @@
+"id","name","created_by","created_at","description","role","subrole","position"
+47,"CES ASSESSMENT","Ali Loutaty","2025-08-06 10:23:19.090503","","CE","Brand representatives","Brand representatives"
+38,"LAU Direct","Ali Loutaty","2025-07-30 02:54:01.655672","LAU utilisateur de Yellow satisfait de l'expérience en général, mais na jamais testé les autres variantes, parle d'iqos a son entourage","SFP","Direct retail","Sales Expert"
+39,"Abondonner Direct","Ali Loutaty","2025-07-30 03:01:34.994719","Un consommateur a abondonné IQOS pour revenir à la cigarette pour plusieurs raisons (Goût très différent de la cigarette, le nettoyage encombrant et le problème de tabac coincé à l’intérieur du cap)","SFP","Direct retail","Sales Expert"
+31,"Abondonner Indirect","Ali Loutaty","2025-07-29 20:52:16.819847","","SFP","Indirect retail","Sales Expert"
+36,"Supervisor Direct","Ali Loutaty","2025-07-29 22:33:26.621427","","SFP","Direct retail","Supervisor"
+33,"Supervisor Indirect","Ali Loutaty","2025-07-29 21:06:52.222941","","SFP","Indirect retail","Supervisor"
+32,"National Supervisor Indirect","Ali Loutaty","2025-07-29 20:59:27.688486","","SFP","Indirect retail","National Supervisor"
+40,"SE Indirect HOW","Ali Loutaty","2025-07-30 03:20:34.528535","","SFP","Indirect retail","Sales Expert"
+41,"SE Direct HOW","Ali Loutaty","2025-07-30 03:25:36.949218","","SFP","Direct retail","Sales Expert"
+29,"LAS Indirect","Ali Loutaty","2025-07-29 20:37:20.84542",""" LAS  Un jeune homme Branché -  CSP A
+ Fumeur de cigarettes MARLBORO""","SFP","Indirect retail","Sales Expert"
+30,"LAU Indirect","Ali Loutaty","2025-07-29 20:45:49.218737","","SFP","Indirect retail","Sales Expert"
+37,"LAS Direct","Ali Loutaty","2025-07-30 02:40:26.150817","LAS  Un jeune homme Branché -  CSP A
+ Fumeur de cigarettes MARLBORO","SFP","Direct retail","Sales Expert"

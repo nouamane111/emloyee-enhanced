@@ -1,0 +1,87 @@
+"id","template_id","title","description","num_questions"
+25,29,"Evaluation des pré-requis",NULL,0
+26,29,"Presentation",NULL,0
+27,29,"C4 / YAP",NULL,0
+28,29,"Découverte du consommateur",NULL,0
+29,29,"Explication du concept / Devices + Consommable",NULL,0
+30,29,"Test Guidé",NULL,0
+31,29,"Conversion Complete",NULL,0
+32,29,"Programs",NULL,0
+33,29,"Cloture",NULL,0
+34,30,"Evaluation des pré-requis",NULL,0
+35,30,"Presentation",NULL,0
+36,30,"C4 / YAP",NULL,0
+37,30,"HYPERCARE",NULL,0
+38,30,"Test Guidé",NULL,0
+39,30,"Programs",NULL,0
+40,30,"Cloture",NULL,0
+41,31,"Evaluation des pré-requis",NULL,0
+42,31,"Presentation",NULL,0
+43,31,"C4 / YAP",NULL,0
+44,31,"Découverte du consommateur",NULL,0
+45,31,"Traitement objections",NULL,0
+46,31,"Technology introduction",NULL,0
+47,31,"Device & Consumable introduction + GT",NULL,0
+48,31,"Cloture",NULL,0
+49,32,"1. Pilotage stratégique",NULL,0
+50,32,"2. Management transversal",NULL,0
+51,32,"3. Suivi de la performance globale",NULL,0
+52,32,"4. Communication et coordination inter-régionale",NULL,0
+53,32,"5. Leadership et influence",NULL,0
+54,32,"6. Conformité et gouvernance",NULL,0
+55,32,"7. Supervision de la visibilité terrain",NULL,0
+56,33,"1. Performance commerciale et maîtrise du produit",NULL,0
+57,33,"2. Management d’équipe",NULL,0
+58,33,"3. Organisation et planification",NULL,0
+59,33,"4. Relation client et qualité de service",NULL,0
+60,33,"5. Compétences comportementales (soft skills)",NULL,0
+61,33,"6. Conformité et respect des procédures",NULL,0
+62,33,"7. Visibilité et remontée d’information",NULL,0
+75,36,"1. Performance commerciale et maîtrise du produit",NULL,0
+76,36,"2. Management d’équipe",NULL,0
+77,36,"3. Organisation et planification",NULL,0
+78,36,"4. Relation client et qualité de service",NULL,0
+79,36,"5. Compétences comportementales (soft skills)",NULL,0
+80,36,"6. Conformité et respect des procédures",NULL,0
+81,36,"7. Visibilité et remontée d’information",NULL,0
+82,37,"Evaluation des pré-requis",NULL,0
+83,37,"Presentation",NULL,0
+84,37,"C4/YAP",NULL,0
+85,37,"Découverte du consommateur",NULL,0
+86,37,"Explication du concept / Devices + Consommable",NULL,0
+87,37,"Test Guidé",NULL,0
+88,37,"Conversion Complete",NULL,0
+89,37,"Programs",NULL,0
+90,37,"Cloture",NULL,0
+91,38,"Evaluation des pré-requis",NULL,0
+92,38,"Presentation",NULL,0
+93,38,"C4/YAP",NULL,0
+94,38,"HYPERCARE",NULL,0
+95,38,"Test Guidé",NULL,0
+96,38,"Programs",NULL,0
+97,38,"Cloture",NULL,0
+98,39,"Evaluation des pré-requis",NULL,0
+99,39,"Presentation",NULL,0
+100,39,"C4/YAP",NULL,0
+101,39,"Découverte du consommateur",NULL,0
+102,39,"Traitement objections",NULL,0
+103,39,"Technology introduction",NULL,0
+104,39,"Device & Consumable introduction + GT",NULL,0
+105,39,"Cloture",NULL,0
+106,40,"Ponctualité",NULL,0
+107,40,"Joignabilité",NULL,0
+108,40,"Réactivité en cas de backup / urgences",NULL,0
+109,40,"Maturité professionnelle",NULL,0
+110,40,"Climat interne / Attitude",NULL,0
+111,40,"Comportement commercial",NULL,0
+112,41,"Ponctualité",NULL,0
+113,41,"Joignabilité",NULL,0
+114,41,"Réactivité en cas de backup / urgences",NULL,0
+115,41,"Maturité professionnelle",NULL,0
+116,41,"Climat interne / Attitude",NULL,0
+117,41,"Comportement commercial",NULL,0
+121,47,"Performance commerciale et opérationnelle",NULL,0
+122,47,"Leadership et développement de l’équipe",NULL,0
+123,47,"Reporting",NULL,0
+124,47,"Qualité de service et relation client",NULL,0
+125,47,"Conformité et comportement professionnel",NULL,0

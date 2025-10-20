@@ -1,0 +1,10 @@
+"id","username","password","role","created_at","subrole","position","channel_manager_id","national_supervisor_id ","supervisor_id"
+1,"Dalal Houassia","Dalal123","Admin","2025-07-05 00:53:51.430203","ALL","ALL",NULL,NULL,NULL
+4,"Oussama Tajedine","Oussama123","Admin","2025-07-11 06:39:45.863974","ALL","ALL",NULL,NULL,NULL
+3,"Ali Loutaty","Ali123","Admin","2025-07-11 06:23:21.962654","ALL","ALL",NULL,NULL,NULL
+5,"Chouaib Atif","Chouaib123","SFP","2025-07-15 13:18:16.230893","Indirect retail","Supervisor",NULL,NULL,5
+6,"Boubker Jerboui","Boubker123","SFP","2025-07-15 12:46:28.486775","Indirect retail","Channel manager",6,NULL,NULL
+2,"Farah El Brini","Farah123","Admin","2025-07-11 06:05:23.000812","ALL","ALL",NULL,NULL,NULL
+7,"Zouhair Zemmoura","Zouhair123","SFP","2025-07-15 13:01:44.577517","Indirect retail","National supervisor",NULL,7,NULL
+38,"Samia Chaouch","default123","CE","2025-08-05 10:21:35.365375","ALL","Supervisor",NULL,NULL,NULL
+40,"El Idrissi Ahmed","Ahmed123","CE","2025-08-05 11:54:55.97674","CE","Supervisor",NULL,NULL,NULL
