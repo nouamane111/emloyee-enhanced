@@ -1,17 +1,18 @@
 // lib/screens/profiles_screen.dart
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui'; // For BackdropFilter
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-
+import 'api_helper.dart';
 import 'home.dart';
 import 'assessment_category.dart';
 import 'add_profile.dart';
 import 'ProfileDetailScreen.dart';
 import 'edit_profile_sheet.dart';
+import 'ReportsScreen.dart'; // IMPORT FOR REPORTS NAVIGATION
 
 // ---------------------------- VISUAL CONSTANTS ----------------------------
-const _bg = Color(0xFFF6F8FB);
+const _bg = Color(0xFFEFF6FF); // PMI Light Blue background
 const _text = Color(0xFF0F172A);
 const _muted = Color(0xFF64748B);
 const _primary = Color(0xFF2563EB);
@@ -46,18 +47,16 @@ class ProfilesScreen extends StatefulWidget {
 }
 
 class _ProfilesScreenState extends State<ProfilesScreen> with TickerProviderStateMixin {
-  // ---- Config ----
-  static const String baseUrl = 'http://localhost:5000';
-
   // ---- Data ----
   final TextEditingController _searchController = TextEditingController();
   final ScrollController _listCtl = ScrollController();
+  final FocusNode _searchFocusNode = FocusNode();
 
   List<Map<String, dynamic>> profiles = [];
   bool isLoading = true;
   String? loadError;
 
-  // ---- Pagination (if you want to add infinite scroll later) ----
+  // ---- Pagination ----
   int total = 0;
   int limit = 100;
   int offset = 0;
@@ -66,11 +65,12 @@ class _ProfilesScreenState extends State<ProfilesScreen> with TickerProviderStat
   // ---- Debounce for server search ----
   Timer? _debounce;
 
-  // ---- Typeahead (optional overlay using /search_profiles) ----
+  // ---- Typeahead suggestions ----
   List<Map<String, dynamic>> _suggestions = [];
   bool _searching = false;
+  bool _showSuggestions = false;
 
-  // ---- Gradient header + Sidebar like ReportsScreen ----
+  // ---- Sidebar ----
   bool _isSidebarVisible = false;
 
   late AnimationController _gradientController;
@@ -103,6 +103,17 @@ class _ProfilesScreenState extends State<ProfilesScreen> with TickerProviderStat
 
     _gradientAnimation = CurvedAnimation(parent: _gradientController, curve: Curves.easeInOut);
     _gradientController.forward();
+
+    // Close suggestions when tapping outside
+    _searchFocusNode.addListener(() {
+      if (!_searchFocusNode.hasFocus) {
+        Future.delayed(const Duration(milliseconds: 200), () {
+          if (mounted) {
+            setState(() => _showSuggestions = false);
+          }
+        });
+      }
+    });
   }
 
   @override
@@ -111,121 +122,193 @@ class _ProfilesScreenState extends State<ProfilesScreen> with TickerProviderStat
     _searchController.dispose();
     _listCtl.dispose();
     _gradientController.dispose();
+    _searchFocusNode.dispose();
     super.dispose();
   }
 
-  // ---------------------------- BACKEND CALLS ----------------------------
-  /// Pulls the visible profiles using the backend hierarchy (NO frontend filtering).
-  Future<void> _fetchVisibleProfiles({required bool reset}) async {
-    if (!mounted) return;
+Future<void> _fetchVisibleProfiles({required bool reset}) async {
+  if (!mounted) return;
 
-    setState(() {
-      if (reset) {
-        isLoading = true;
-        offset = 0;
-        profiles = [];
-      } else {
-        paging = true;
-      }
-      loadError = null;
-    });
-
-    final isAdmin = widget.role.toLowerCase() == 'admin' || widget.position.toLowerCase() == 'all';
-
-    final params = <String, String>{
-      'username': widget.username,
-      'role': isAdmin ? '' : widget.role.toUpperCase(),          // '', 'SFP', 'CE', 'CC'
-      'position': isAdmin ? 'all' : widget.position.toLowerCase(),
-      'q': _searchController.text.trim(),
-      'limit': limit.toString(),
-      'offset': offset.toString(),
-      'order': 'position',
-    };
-
-    try {
-      final uri = Uri.parse('$baseUrl/profiles_visible').replace(queryParameters: params);
-      final r = await http.get(uri, headers: {'Content-Type': 'application/json'});
-
-      if (r.statusCode == 200) {
-        final json = jsonDecode(r.body) as Map<String, dynamic>;
-        final list = (json['profiles'] as List?)?.cast<Map<String, dynamic>>() ?? <Map<String, dynamic>>[];
-        final newTotal = (json['total'] ?? list.length) as int;
-
-        setState(() {
-          if (reset) {
-            profiles = list;
-          } else {
-            profiles.addAll(list);
-          }
-          total = newTotal;
-          isLoading = false;
-          paging = false;
-          offset = profiles.length;
-        });
-      } else {
-        setState(() {
-          isLoading = false;
-          paging = false;
-          loadError = 'HTTP ${r.statusCode}';
-        });
-        _toast('Failed to load profiles: HTTP ${r.statusCode}');
-      }
-    } catch (e) {
-      setState(() {
-        isLoading = false;
-        paging = false;
-        loadError = e.toString();
-      });
-      _toast('Failed to load profiles: $e');
+  setState(() {
+    if (reset) {
+      isLoading = true;
+      offset = 0;
+      profiles = [];
+    } else {
+      paging = true;
     }
-  }
+    loadError = null;
+  });
 
-  /// Debounced server-side search; updates the list (no client filtering).
-  void _onSearchChanged(String _) {
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 250), () {
-      _fetchVisibleProfiles(reset: true);
-      _searchTypeahead(_searchController.text); // keep overlay suggestions in sync (optional)
-    });
-  }
+  final isAdmin =
+      widget.role.toLowerCase() == 'admin' ||
+      widget.position.toLowerCase() == 'all';
 
-  /// Typeahead overlay using your existing /search_profiles logic
-  Future<void> _searchTypeahead(String q) async {
+  final params = <String, String>{
+    'username': widget.username,
+    'role': isAdmin ? '' : widget.role.toUpperCase(),
+    'position': isAdmin ? 'all' : widget.position.toLowerCase(),
+    'q': _searchController.text.trim(),
+    'limit': limit.toString(),
+    'offset': offset.toString(),
+    'order': 'position',
+  };
+
+  try {
+    final query = Uri(queryParameters: params).query;
+    final r = await ApiHelper.get('/profiles_visible?$query');
+
     if (!mounted) return;
-    final query = q.trim();
-    if (query.isEmpty) {
-      setState(() => _suggestions = []);
+
+    if (r.statusCode == 401) {
+      await _handleUnauthorized();
       return;
     }
 
-    setState(() => _searching = true);
-    try {
-      final params = <String, String>{
-        'username': widget.username,
-        'position': widget.position.toLowerCase(),
-        'role': widget.role.toUpperCase(),
-        'query': query,
-        'limit': '15',
-      };
-      final uri = Uri.parse('$baseUrl/search_profiles').replace(queryParameters: params);
-      final r = await http.get(uri, headers: {'Content-Type': 'application/json'});
+    if (r.statusCode == 200) {
+      final json = jsonDecode(r.body) as Map<String, dynamic>;
 
-      if (r.statusCode == 200) {
-        final decoded = jsonDecode(r.body);
-        if (decoded is List) {
-          setState(() => _suggestions = decoded.cast<Map<String, dynamic>>());
+      final list = (json['profiles'] as List?)
+              ?.map((e) => Map<String, dynamic>.from(e as Map))
+              .toList() ??
+          <Map<String, dynamic>>[];
+
+      final newTotal = (json['total'] ?? list.length) as int;
+
+      setState(() {
+        if (reset) {
+          profiles = list;
         } else {
-          setState(() => _suggestions = []);
+          profiles.addAll(list);
         }
-      } else {
-        setState(() => _suggestions = []);
-      }
-    } catch (_) {
-      setState(() => _suggestions = []);
-    } finally {
-      if (mounted) setState(() => _searching = false);
+        total = newTotal;
+        isLoading = false;
+        paging = false;
+        offset = profiles.length;
+      });
+    } else {
+      setState(() {
+        isLoading = false;
+        paging = false;
+        loadError = 'HTTP ${r.statusCode}';
+      });
+      _toast('Failed to load profiles: HTTP ${r.statusCode}');
     }
+  } catch (e) {
+    if (!mounted) return;
+
+    setState(() {
+      isLoading = false;
+      paging = false;
+      loadError = e.toString();
+    });
+
+    _toast('Failed to load profiles: $e');
   }
+}
+
+Future<void> _handleUnauthorized() async {
+  await ApiHelper.clearToken();
+
+  if (!mounted) return;
+
+  setState(() {
+    isLoading = false;
+    paging = false;
+    profiles = [];
+    _suggestions = [];
+    _showSuggestions = false;
+    loadError = 'Session expired. Please log in again.';
+  });
+
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(
+      content: Text('Session expired. Please log in again.'),
+    ),
+  );
+}
+
+  /// Debounced server-side search
+  void _onSearchChanged(String value) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 400), () {
+      if (!mounted) return;
+      _fetchVisibleProfiles(reset: true);
+    });
+
+    // Also trigger typeahead suggestions
+    _searchTypeahead(value);
+  }
+
+Future<void> _searchTypeahead(String q) async {
+  if (!mounted) return;
+
+  final query = q.trim();
+
+  if (query.isEmpty) {
+    setState(() {
+      _suggestions = [];
+      _showSuggestions = false;
+    });
+    return;
+  }
+
+  setState(() {
+    _searching = true;
+    _showSuggestions = true;
+  });
+
+  try {
+    final params = <String, String>{
+      'username': widget.username,
+      'position': widget.position.toLowerCase(),
+      'role': widget.role.toUpperCase(),
+      'query': query,
+      'limit': '10',
+    };
+
+    final queryString = Uri(queryParameters: params).query;
+    final r = await ApiHelper.get('/search_profiles?$queryString');
+
+    if (!mounted) return;
+
+    if (r.statusCode == 401) {
+      await _handleUnauthorized();
+      return;
+    }
+
+    if (r.statusCode == 200) {
+      final decoded = jsonDecode(r.body);
+
+      if (decoded is List) {
+        setState(() {
+          _suggestions = decoded
+              .map((e) => Map<String, dynamic>.from(e as Map))
+              .toList();
+          _searching = false;
+        });
+      } else {
+        setState(() {
+          _suggestions = [];
+          _searching = false;
+        });
+      }
+    } else {
+      setState(() {
+        _suggestions = [];
+        _searching = false;
+      });
+    }
+  } catch (e) {
+    debugPrint('Search profiles error: $e');
+
+    if (!mounted) return;
+    setState(() {
+      _suggestions = [];
+      _searching = false;
+    });
+  }
+}
 
   // ---------------------------- NAV ----------------------------
   void _goDashboard() {
@@ -245,7 +328,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> with TickerProviderStat
   }
 
   void _goAssessments() {
-    Navigator.push(
+    Navigator.pushReplacement(
       context,
       MaterialPageRoute(
         builder: (context) => AssessmentCategoryScreen(
@@ -260,19 +343,20 @@ class _ProfilesScreenState extends State<ProfilesScreen> with TickerProviderStat
     );
   }
 
-  
-
   void _goProfiles() {
+    // Already on profiles, just close sidebar
+    setState(() => _isSidebarVisible = false);
+  }
+
+  void _goReports() {
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
-        builder: (context) => ProfilesScreen(
+        builder: (context) => ReportsScreen(
           role: widget.role,
-          subrole: widget.subrole,
           username: widget.username,
+          subrole: widget.subrole,
           position: widget.position,
-          nationalSupervisorId: widget.nationalSupervisorId,
-          supervisorId: widget.supervisorId,
         ),
       ),
     );
@@ -292,7 +376,6 @@ class _ProfilesScreenState extends State<ProfilesScreen> with TickerProviderStat
       ),
     ),
   ).then((_) {
-    // Refresh after returning from add
     _fetchVisibleProfiles(reset: true);
   });
 }
@@ -302,13 +385,6 @@ class _ProfilesScreenState extends State<ProfilesScreen> with TickerProviderStat
   void _toast(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
-
-  int _positionRank(dynamic posRaw) {
-    const order = ['channel manager', 'national supervisor', 'supervisor', 'sales expert'];
-    final pos = (posRaw ?? '').toString().toLowerCase();
-    final idx = order.indexOf(pos);
-    return idx >= 0 ? idx : order.length + 1;
   }
 
   String _initials(String name) {
@@ -361,161 +437,141 @@ class _ProfilesScreenState extends State<ProfilesScreen> with TickerProviderStat
       gradientSets[_gNext],
       _gradientAnimation.value,
     );
-    final isNarrow = MediaQuery.of(context).size.width < 1000;
 
-    final clamped = MediaQuery.textScalerOf(context).clamp(maxScaleFactor: 1.15);
-
-    return MediaQuery(
-      data: MediaQuery.of(context).copyWith(textScaler: clamped),
-      child: Scaffold(
-        backgroundColor: _bg,
-        body: Stack(
-          children: [
-            // Main area
-            Padding(
-              padding: EdgeInsets.only(
-                left: (_isSidebarVisible && !isNarrow) ? 300 : 20,
-                right: 20,
-                top: 20,
-                bottom: 20,
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Top bar (menu chip + title + refresh / add button)
-                  Row(
-                    children: [
-                      _AnimatedChipButton(
-                        colors: colors,
-                        icon: _isSidebarVisible ? Icons.close : Icons.menu,
-                        onTap: () => setState(() => _isSidebarVisible = !_isSidebarVisible),
-                      ),
-                      const SizedBox(width: 20),
-                      Icon(Icons.people_alt_outlined, color: colors[0], size: 20),
-                      const SizedBox(width: 8),
-                      Text('Profiles', style: TextStyle(color: colors[0], fontSize: 16)),
-                      const Spacer(),
-                      if (widget.role.toLowerCase() == 'admin')
-                        _GradientActionBtn(
-                          colors: [colors[1], colors[2]],
-                          icon: Icons.person_add,
-                          label: 'Add',
-                          onTap: _goAddProfile,
-                        ),
-                      const SizedBox(width: 8),
+    return Scaffold(
+      backgroundColor: _bg,
+      body: Stack(
+        children: [
+          // Main area
+          Padding(
+            padding: EdgeInsets.only(
+              left: _isSidebarVisible ? 300 : 20,
+              right: 20,
+              top: 20,
+              bottom: 20,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Top bar
+                Row(
+                  children: [
+                    _AnimatedChipButton(
+                      colors: colors,
+                      icon: _isSidebarVisible ? Icons.close : Icons.menu,
+                      onTap: () => setState(() => _isSidebarVisible = !_isSidebarVisible),
+                    ),
+                    const SizedBox(width: 20),
+                    Icon(Icons.people_alt_outlined, color: colors[0], size: 20),
+                    const SizedBox(width: 8),
+                    Text('Profiles', style: TextStyle(color: colors[0], fontSize: 16)),
+                    const Spacer(),
+                    if (widget.role.toLowerCase() == 'admin')
                       _GradientActionBtn(
                         colors: [colors[1], colors[2]],
-                        icon: Icons.refresh,
-                        label: 'Refresh',
-                        onTap: () => _fetchVisibleProfiles(reset: true),
+                        icon: Icons.person_add,
+                        label: 'Add',
+                        onTap: _goAddProfile,
                       ),
-                    ],
-                  ),
-                  const SizedBox(height: 20),
+                    const SizedBox(width: 8),
+                    _GradientActionBtn(
+                      colors: [colors[1], colors[2]],
+                      icon: Icons.refresh,
+                      label: 'Refresh',
+                      onTap: () => _fetchVisibleProfiles(reset: true),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
 
-                  // Title row
-                  ShaderMask(
-                    shaderCallback: (bounds) => LinearGradient(
-                      colors: colors, begin: Alignment.topLeft, end: Alignment.bottomRight,
-                    ).createShader(bounds),
-                    child: const Text(
-                      'Team Directory',
-                      style: TextStyle(
-                        fontSize: 28,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                        letterSpacing: 0.5,
-                      ),
+                // Title row
+                ShaderMask(
+                  shaderCallback: (bounds) => LinearGradient(
+                    colors: colors, begin: Alignment.topLeft, end: Alignment.bottomRight,
+                  ).createShader(bounds),
+                  child: const Text(
+                    'Team Directory',
+                    style: TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                      letterSpacing: 0.5,
                     ),
                   ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Search, view and manage people',
-                    style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Search, view and manage people',
+                  style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                ),
+
+                const SizedBox(height: 16),
+
+                // Search + filters pill
+                _filtersBar(colors),
+
+                const SizedBox(height: 12),
+
+                // Error banner
+                if (loadError != null)
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Colors.red.shade50,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.red.shade200),
+                    ),
+                    padding: const EdgeInsets.all(12),
+                    child: Text(loadError!, style: const TextStyle(color: Colors.red)),
                   ),
 
-                  const SizedBox(height: 16),
+                const SizedBox(height: 12),
 
-                  // Search + filters pill
-                  _filtersBar(colors),
-
-                  const SizedBox(height: 12),
-
-                  // Error banner
-                  if (loadError != null)
-                    Container(
-                      decoration: BoxDecoration(
-                        color: Colors.red.shade50,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: Colors.red.shade200),
-                      ),
-                      padding: const EdgeInsets.all(12),
-                      child: Text(loadError!, style: const TextStyle(color: Colors.red)),
-                    ),
-
-                  const SizedBox(height: 12),
-
-                  // List panel
-                  Expanded(
-                    child: Container(
-                      decoration: _panel(),
-                      padding: const EdgeInsets.all(12),
-                      child: isLoading
-                          ? const Center(child: CircularProgressIndicator())
-                          : profiles.isEmpty
-                              ? _empty('No profiles', subtitle: 'Try a different search')
-                              : _profilesList(),
-                    ),
+                // List panel
+                Expanded(
+                  child: Container(
+                    decoration: _panel(),
+                    padding: const EdgeInsets.all(12),
+                    child: isLoading
+                        ? const Center(child: CircularProgressIndicator())
+                        : profiles.isEmpty
+                            ? _empty('No profiles', subtitle: 'Try a different search')
+                            : _profilesList(),
                   ),
+                ),
 
-                  if (paging)
-                    const Padding(
-                      padding: EdgeInsets.only(top: 12),
-                      child: Center(child: CircularProgressIndicator()),
-                    ),
-                ],
+                if (paging)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 12),
+                    child: Center(child: CircularProgressIndicator()),
+                  ),
+              ],
+            ),
+          ),
+
+          // GLASSMORPHIC SIDEBAR
+          if (_isSidebarVisible)
+            Positioned(
+              left: 0, top: 0, bottom: 0,
+              child: _Sidebar(
+                colors: colors,
+                username: widget.username,
+                role: widget.role,
+                onDashboard: _goDashboard,
+                onAssessments: _goAssessments,
+                onProfiles: _goProfiles,
+                onReports: _goReports,
               ),
             ),
 
-            // Sidebar (static on wide, overlay on narrow)
-            if (_isSidebarVisible && !isNarrow)
-              Positioned(
-                left: 0, top: 0, bottom: 0,
-                child: _Sidebar(
-                  colors: colors,
-                  username: widget.username,
-                  role: widget.role,
-                  onDashboard: _goDashboard,
-                  onAssessments: _goAssessments,
-                  onProfiles: _goProfiles,
-                  onReports: () => setState(() => _isSidebarVisible = false),
-                ),
+          if (_isSidebarVisible)
+            GestureDetector(
+              onTap: () => setState(() => _isSidebarVisible = false),
+              child: Container(
+                margin: const EdgeInsets.only(left: 280),
+                color: Colors.black.withOpacity(0.3),
               ),
-
-            if (_isSidebarVisible && isNarrow)
-              Positioned.fill(
-                child: GestureDetector(
-                  onTap: () => setState(() => _isSidebarVisible = false),
-                  child: Container(
-                    color: Colors.black.withOpacity(0.3),
-                    alignment: Alignment.centerLeft,
-                    child: SizedBox(
-                      width: 280,
-                      child: _Sidebar(
-                        colors: colors,
-                        username: widget.username,
-                        role: widget.role,
-                        onDashboard: _goDashboard,
-                        onAssessments: _goAssessments,
-                        onProfiles: _goProfiles,
-                        onReports: () => setState(() => _isSidebarVisible = false),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        ),
+            ),
+        ],
       ),
     );
   }
@@ -530,62 +586,99 @@ class _ProfilesScreenState extends State<ProfilesScreen> with TickerProviderStat
         crossAxisAlignment: WrapCrossAlignment.center,
         alignment: WrapAlignment.start,
         children: [
-          // Search with typeahead (fixed width so overlay aligns)
+          // CUSTOM SEARCH WITH BEAUTIFUL SUGGESTIONS
           SizedBox(
             width: 420,
-            child: Container(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(28),
-                border: Border.all(color: const Color(0xFFE5E7EB)),
-                boxShadow: [BoxShadow(color: const Color(0x0F000000), blurRadius: 12, offset: const Offset(0, 6))],
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  TextField(
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(28),
+                    border: Border.all(color: const Color(0xFFE5E7EB)),
+                    boxShadow: [BoxShadow(color: const Color(0x0F000000), blurRadius: 12, offset: const Offset(0, 6))],
+                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: TextField(
                     controller: _searchController,
+                    focusNode: _searchFocusNode,
                     decoration: InputDecoration(
                       border: InputBorder.none,
-                      hintText: _searching ? 'Searching…' : 'Search by name, role, position, subrole…',
-                      prefixIcon: const Icon(Icons.search, color: _muted),
+                      hintText: _searching ? 'Searching…' : 'Search by name, role, position...',
+                      hintStyle: TextStyle(color: _muted.withOpacity(0.6)),
+                      prefixIcon: Icon(Icons.search, color: colors[0], size: 22),
+                      suffixIcon: _searchController.text.isNotEmpty
+                          ? IconButton(
+                              icon: Icon(Icons.close, color: _muted, size: 20),
+                              onPressed: () {
+                                _searchController.clear();
+                                setState(() {
+                                  _suggestions = [];
+                                  _showSuggestions = false;
+                                });
+                                _fetchVisibleProfiles(reset: true);
+                              },
+                            )
+                          : null,
                     ),
-                    onChanged: (v) {
-                      _onSearchChanged(v);
-                      _searchTypeahead(v);
+                    onChanged: _onSearchChanged,
+                    onSubmitted: (_) {
+                      // DON'T close suggestions on Enter
+                      _fetchVisibleProfiles(reset: true);
                     },
                   ),
-                  if (_suggestions.isNotEmpty)
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      top: 52,
-                      child: Material(
-                        elevation: 6,
-                        borderRadius: BorderRadius.circular(12),
-                        child: ConstrainedBox(
-                          constraints: const BoxConstraints(maxHeight: 300),
+                ),
+
+                // BEAUTIFUL CUSTOM SUGGESTIONS DROPDOWN
+                if (_showSuggestions && _suggestions.isNotEmpty)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    top: 58,
+                    child: Container(
+                      constraints: const BoxConstraints(maxHeight: 320),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: Colors.grey[200]!),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.1),
+                            blurRadius: 20,
+                            offset: const Offset(0, 8),
+                          ),
+                        ],
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(16),
+                        child: Material(
+                          color: Colors.transparent,
                           child: ListView.separated(
-                            padding: EdgeInsets.zero,
+                            padding: const EdgeInsets.symmetric(vertical: 8),
                             shrinkWrap: true,
                             itemCount: _suggestions.length,
-                            separatorBuilder: (context, index) => const Divider(height: 1),
+                            separatorBuilder: (context, index) => Divider(
+                              height: 1,
+                              indent: 16,
+                              endIndent: 16,
+                              color: Colors.grey[100],
+                            ),
                             itemBuilder: (context, i) {
                               final s = _suggestions[i];
                               final name = (s['full_name'] ?? '').toString();
                               final role = (s['role'] ?? s['category'] ?? '').toString();
                               final pos  = (s['position'] ?? '').toString();
+                              final zone = (s['zone'] ?? '').toString();
                               final id   = (s['id'] ?? '').toString();
 
-                              return ListTile(
-                                dense: true,
-                                leading: const Icon(Icons.person),
-                                title: Text(name.isEmpty ? '(no name)' : name),
-                                subtitle: Text([role, pos].where((e) => e.isNotEmpty).join(' • ')),
+                              return InkWell(
                                 onTap: () {
                                   FocusScope.of(context).unfocus();
-                                  setState(() => _suggestions = []);
+                                  setState(() {
+                                    _suggestions = [];
+                                    _showSuggestions = false;
+                                  });
                                   final pid = int.tryParse(id) ?? 0;
                                   if (pid <= 0) return;
                                   Navigator.push(
@@ -598,18 +691,110 @@ class _ProfilesScreenState extends State<ProfilesScreen> with TickerProviderStat
                                     ),
                                   );
                                 },
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                                  child: Row(
+                                    children: [
+                                      // Avatar
+                                      CircleAvatar(
+                                        radius: 20,
+                                        backgroundColor: _primarySoft,
+                                        child: Text(
+                                          _initials(name),
+                                          style: const TextStyle(
+                                            color: _primary,
+                                            fontWeight: FontWeight.w700,
+                                            fontSize: 14,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 12),
+
+                                      // Info
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              name.isEmpty ? '(no name)' : name,
+                                              style: const TextStyle(
+                                                fontWeight: FontWeight.w600,
+                                                fontSize: 14,
+                                                color: _text,
+                                              ),
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                            const SizedBox(height: 2),
+                                            Text(
+                                              [pos, role, zone].where((e) => e.isNotEmpty).join(' • '),
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                color: Colors.grey[600],
+                                              ),
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+
+                                      // Arrow icon
+                                      Icon(Icons.arrow_forward_ios, size: 14, color: Colors.grey[400]),
+                                    ],
+                                  ),
+                                ),
                               );
                             },
                           ),
                         ),
                       ),
                     ),
-                ],
-              ),
+                  ),
+
+                // SEARCHING INDICATOR
+                if (_searching && _showSuggestions)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    top: 58,
+                    child: Container(
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: Colors.grey[200]!),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.1),
+                            blurRadius: 20,
+                            offset: const Offset(0, 8),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(colors[0]),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                            'Searching...',
+                            style: TextStyle(color: colors[0], fontSize: 14),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
 
-          // Role pill (read-only display of current scope — optional)
+          // Role pill
           _pillWrap(
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 10),
@@ -732,10 +917,10 @@ class _ProfilesScreenState extends State<ProfilesScreen> with TickerProviderStat
                                           return ClipRRect(
                                             borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
                                             child: EditProfileSheet(
-                                              baseUrl: baseUrl,
-                                              profileId: id,
-                                              currentUserRole: widget.role,
-                                              currentUserPosition: widget.position,
+                                                baseUrl: ApiHelper.baseUrl,
+                                                profileId: id,
+                                                currentUserRole: widget.role,
+                                                currentUserPosition: widget.position,
                                             ),
                                           );
                                         },
@@ -866,6 +1051,7 @@ class _GradientActionBtn extends StatelessWidget {
   }
 }
 
+// GLASSMORPHIC SIDEBAR (MATCHING ASSESSMENT LIST)
 class _Sidebar extends StatelessWidget {
   final List<Color> colors;
   final String username;
@@ -887,48 +1073,118 @@ class _Sidebar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: 280,
-      height: MediaQuery.of(context).size.height,
-      decoration: BoxDecoration(
-        gradient: LinearGradient(colors: colors, begin: Alignment.topLeft, end: Alignment.bottomRight),
-        boxShadow: [BoxShadow(color: colors.first.withOpacity(0.3), blurRadius: 20, spreadRadius: 5, offset: const Offset(5, 0))],
-      ),
-      child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 20),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: Colors.white.withOpacity(0.2)),
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: Image.asset('assets/logo.png', width: 90),
+    return ClipRRect(
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+        child: Container(
+          width: 280,
+          height: MediaQuery.of(context).size.height,
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                colors[0].withOpacity(0.85),
+                colors[1].withOpacity(0.75),
+                colors[2].withOpacity(0.65),
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            border: Border(
+              right: BorderSide(
+                color: Colors.white.withOpacity(0.2),
+                width: 1,
               ),
             ),
-            const SizedBox(height: 24),
-            const Text('PHILIP MORRIS',
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 16, letterSpacing: 2.2)),
-            const SizedBox(height: 4),
-            Text('INTERNATIONAL',
-                style: TextStyle(color: Colors.white.withOpacity(0.85), fontSize: 12, letterSpacing: 1.8)),
-            const SizedBox(height: 36),
+            boxShadow: [
+              BoxShadow(
+                color: colors[0].withOpacity(0.3),
+                blurRadius: 30,
+                spreadRadius: 5,
+                offset: const Offset(5, 0),
+              ),
+            ],
+          ),
+          child: SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 30, horizontal: 20),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                // BIGGER LOGO CONTAINER (110px - matching assessment list)
+                Container(
+                  padding: const EdgeInsets.all(24),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(color: Colors.white.withOpacity(0.3), width: 2),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 20,
+                        offset: const Offset(0, 10),
+                      ),
+                    ],
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(16),
+                    child: Image.asset('assets/logo.png', width: 110), // BIGGER LOGO
+                  ),
+                ),
 
-            GestureDetector(onTap: onDashboard,   child: _navItem(Icons.dashboard_outlined, 'Dashboard', false)),
-            const SizedBox(height: 16),
-            GestureDetector(onTap: onAssessments, child: _navItem(Icons.assessment_outlined, 'Assessments', false)),
-            const SizedBox(height: 16),
-            GestureDetector(onTap: onProfiles,    child: _navItem(Icons.people_outlined, 'Profiles', true)),
-            const SizedBox(height: 16),
-            GestureDetector(onTap: onReports,     child: _navItem(Icons.analytics_outlined, 'Reports', false)),
+                const SizedBox(height: 32),
 
-            const Spacer(),
-            _userInfo(username, role),
-          ]),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ShaderMask(
+                      shaderCallback: (bounds) => LinearGradient(
+                        colors: [Colors.white, Colors.white.withOpacity(0.95)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ).createShader(bounds),
+                      child: const Text(
+                        'PHILIP MORRIS',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 17,
+                          letterSpacing: 2.5,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    ShaderMask(
+                      shaderCallback: (bounds) => LinearGradient(
+                        colors: [Colors.white.withOpacity(0.9), Colors.white.withOpacity(0.7)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ).createShader(bounds),
+                      child: const Text(
+                        'INTERNATIONAL',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w400,
+                          fontSize: 13,
+                          letterSpacing: 2.0,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 40),
+
+                GestureDetector(onTap: onDashboard,   child: _navItem(Icons.dashboard_outlined, 'Dashboard', false)),
+                const SizedBox(height: 16),
+                GestureDetector(onTap: onAssessments, child: _navItem(Icons.assessment_outlined, 'Assessments', false)),
+                const SizedBox(height: 16),
+                GestureDetector(onTap: onProfiles,    child: _navItem(Icons.people_outlined, 'Profiles', true)),
+                const SizedBox(height: 16),
+                GestureDetector(onTap: onReports,     child: _navItem(Icons.analytics_outlined, 'Reports', false)),
+
+                const Spacer(),
+                _userInfo(username, role),
+              ]),
+            ),
+          ),
         ),
       ),
     );
@@ -939,18 +1195,18 @@ class _Sidebar extends StatelessWidget {
       duration: const Duration(milliseconds: 200),
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
       decoration: BoxDecoration(
-        color: active ? Colors.white.withOpacity(0.15) : Colors.transparent,
+        color: active ? Colors.white.withOpacity(0.2) : Colors.transparent,
         borderRadius: BorderRadius.circular(12),
-        border: active ? Border.all(color: Colors.white.withOpacity(0.3)) : null,
+        border: active ? Border.all(color: Colors.white.withOpacity(0.4)) : null,
       ),
       child: Row(
         children: [
-          Icon(icon, color: active ? Colors.white : Colors.white.withOpacity(0.7), size: 22),
+          Icon(icon, color: active ? Colors.white : Colors.white.withOpacity(0.8), size: 22),
           const SizedBox(width: 16),
           Text(
             title,
             style: TextStyle(
-              color: active ? Colors.white : Colors.white.withOpacity(0.7),
+              color: active ? Colors.white : Colors.white.withOpacity(0.8),
               fontSize: 16,
               fontWeight: active ? FontWeight.w600 : FontWeight.w400,
               letterSpacing: 0.5,
@@ -964,40 +1220,39 @@ class _Sidebar extends StatelessWidget {
   Widget _userInfo(String username, String role) {
     return Container(
       margin: const EdgeInsets.only(bottom: 30),
-      padding: const EdgeInsets.all(10),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white.withOpacity(0.2)),
+        color: Colors.white.withOpacity(0.15),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.white.withOpacity(0.3)),
       ),
       child: Row(
         children: [
           CircleAvatar(
-            radius: 16,
-            backgroundColor: Colors.white.withOpacity(0.2),
+            radius: 18,
+            backgroundColor: Colors.white.withOpacity(0.3),
             child: Text(
               username.isNotEmpty ? username[0].toUpperCase() : 'U',
-              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 10),
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
               Text(
                 username,
-                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 12),
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
                 overflow: TextOverflow.ellipsis,
                 maxLines: 1,
               ),
               Text(
                 role,
-                style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 10),
+                style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 11),
                 overflow: TextOverflow.ellipsis,
                 maxLines: 1,
               ),
             ]),
           ),
-          Icon(Icons.settings, color: Colors.white.withOpacity(0.6), size: 16),
         ],
       ),
     );
@@ -1005,7 +1260,6 @@ class _Sidebar extends StatelessWidget {
 }
 
 // ---------------------------- Helpers ----------------------------
-// Split flat color list into triplets
 extension on List<Color> {
   List<List<Color>> slices(int size) {
     final out = <List<Color>>[];

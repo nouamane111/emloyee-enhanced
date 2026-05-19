@@ -1,8 +1,7 @@
 // lib/screens/add_profile.dart
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-
+import 'api_helper.dart';
 import 'home.dart';
 import 'profiles.dart';
 import 'assessment_category.dart';
@@ -208,73 +207,100 @@ class _AddProfileScreenState extends State<AddProfileScreen>
   }
 
   // ---------------- SUBMIT ----------------
-  Future<void> submitProfile() async {
-    if (!_formKey.currentState!.validate()) return;
+Future<void> submitProfile() async {
+  if (!_formKey.currentState!.validate()) return;
 
-    // Extra validation aligned with rules
-    if (selectedRole == 'SFP') {
-      if (_sfpNeedsBothSupers) {
-        if (_supervisorNameController.text.isEmpty ||
-            _nationalSupervisorNameController.text.isEmpty) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('This position requires Supervisor and National supervisor names.'),
-            ),
-          );
-          return;
-        }
-      } else if (_isOneOf(selectedPosition, ['Supervisor'])) {
-        if (_nationalSupervisorNameController.text.isEmpty) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Supervisor requires National supervisor name.')),
-          );
-          return;
-        }
-      }
-    }
-
-    // CE Brand representatives require Supervisor name (no national supervisor)
-    if (selectedRole == 'CE' && _isOneOf(selectedPosition, ['Brand representatives'])) {
-      if (_supervisorNameController.text.isEmpty) {
+  // Extra validation aligned with rules
+  if (selectedRole == 'SFP') {
+    if (_sfpNeedsBothSupers) {
+      if (_supervisorNameController.text.isEmpty ||
+          _nationalSupervisorNameController.text.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('CE Brand representatives require a Supervisor name.')),
+          const SnackBar(
+            content: Text(
+              'This position requires Supervisor and National supervisor names.',
+            ),
+          ),
+        );
+        return;
+      }
+    } else if (_isOneOf(selectedPosition, ['Supervisor'])) {
+      if (_nationalSupervisorNameController.text.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Supervisor requires National supervisor name.'),
+          ),
         );
         return;
       }
     }
+  }
 
-    final body = {
-      'role': selectedRole,
-      'subrole': selectedSubrole,
-      'position': selectedPosition,
-      'full_name': _fullNameController.text,
-      'username': requiresAccount ? _usernameController.text : null,
-      'password': requiresAccount ? _passwordController.text : null,
-      'supervisor_name': showSupervisorField ? _supervisorNameController.text : null,
-      'national_supervisor_name': showNationalField ? _nationalSupervisorNameController.text : null,
-      'date_joined': _dateJoinedController.text.isNotEmpty ? _dateJoinedController.text : null,
-      'zone': _zoneController.text,
-    };
+  // CE Brand representatives require Supervisor name
+  if (selectedRole == 'CE' &&
+      _isOneOf(selectedPosition, ['Brand representatives'])) {
+    if (_supervisorNameController.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('CE Brand representatives require a Supervisor name.'),
+        ),
+      );
+      return;
+    }
+  }
 
-    final response = await http.post(
-      Uri.parse('http://localhost:5000/add_profile'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode(body),
-    );
+  final body = {
+    'role': selectedRole,
+    'subrole': selectedSubrole,
+    'position': selectedPosition,
+    'full_name': _fullNameController.text.trim(),
+    'username': requiresAccount ? _usernameController.text.trim() : null,
+    'password': requiresAccount ? _passwordController.text.trim() : null,
+    'supervisor_name':
+        showSupervisorField ? _supervisorNameController.text.trim() : null,
+    'national_supervisor_name': showNationalField
+        ? _nationalSupervisorNameController.text.trim()
+        : null,
+    'date_joined':
+        _dateJoinedController.text.isNotEmpty ? _dateJoinedController.text : null,
+    'zone': _zoneController.text.trim(),
+  };
+
+  try {
+    final response = await ApiHelper.post('/add_profile', body);
 
     if (!mounted) return;
+
+    if (response.statusCode == 401) {
+      await ApiHelper.clearToken();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Session expired. Please log in again.'),
+        ),
+      );
+      return;
+    }
 
     if (response.statusCode == 200) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Profile added successfully!')),
       );
+
       Navigator.pop(context, true);
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to add profile: ${response.body}')),
       );
     }
+  } catch (e) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Connection error: $e')),
+    );
   }
+}
 
   // ---------------- INPUTS ----------------
   InputDecoration _dec(String label, {Widget? suffixIcon}) => InputDecoration(

@@ -1,7 +1,7 @@
 // lib/screens/edit_profile_sheet.dart
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'api_helper.dart';
 
 /// Bottom sheet to edit a profile using NAMES (not IDs)
 /// - Supervisor & National Supervisor edited via typeahead by NAME
@@ -105,127 +105,186 @@ class _EditProfileSheetState extends State<EditProfileSheet> {
     super.dispose();
   }
 
-  Future<void> _fetchProfile() async {
-    setState(() {
-      _loading = true;
-      _loadError = null;
-    });
+Future<void> _fetchProfile() async {
+  setState(() {
+    _loading = true;
+    _loadError = null;
+  });
 
-    try {
-      final uri = Uri.parse('${widget.baseUrl}/profile_get')
-          .replace(queryParameters: {'id': widget.profileId.toString()});
-      final r = await http.get(uri, headers: {'Content-Type': 'application/json'});
+  try {
+    final query = Uri(queryParameters: {
+      'id': widget.profileId.toString(),
+    }).query;
 
-      if (r.statusCode != 200) {
-        setState(() {
-          _loadError = 'HTTP ${r.statusCode}';
-          _loading = false;
-        });
-        return;
-      }
+    final r = await ApiHelper.get('/profile_get?$query');
 
-      final decoded = jsonDecode(r.body) as Map<String, dynamic>;
-      final p = (decoded['profile'] ?? {}) as Map<String, dynamic>;
-      _original = Map<String, dynamic>.from(p);
+    if (!mounted) return;
 
-      // text fields
-      _nameCtl.text = (p['full_name'] ?? '').toString();
-      _phoneCtl.text = (p['phone'] ?? '').toString();
-      _emailCtl.text = (p['email'] ?? '').toString();
-      _subroleCtl.text = (p['subrole'] ?? '').toString();
-      _zoneCtl.text = (p['zone'] ?? '').toString();
-      _dateJoinedCtl.text = (p['date_joined'] ?? '').toString();
-
-      // dropdowns (normalize to canonical)
-      _role = canonUpper(p['role']);            // 'SFP'/'CE'/'CC'
-      _position = canonLower(p['position']);    // lowercase canonical
-
-      // names for hierarchy
-      _supervisorNameCtl.text = (p['supervisor_name'] ?? '').toString();
-      _nationalSupervisorNameCtl.text = (p['national_supervisor_name'] ?? '').toString();
-
-      setState(() => _loading = false);
-    } catch (e) {
-      setState(() {
-        _loadError = e.toString();
-        _loading = false;
-      });
-    }
-  }
-
-  Future<void> _searchSupervisors(String q) async {
-    final query = q.trim();
-    if (query.isEmpty) {
-      setState(() => _supSuggestions = []);
+    if (r.statusCode == 401) {
+      await _handleUnauthorized();
       return;
     }
-    setState(() => _searchingSup = true);
-    try {
-      final params = <String, String>{
-        'username': 'x', // not used when position != all; dummy to satisfy API
-        'position': 'supervisor',
-        'role': _role,           // SFP/CE/CC
-        'query': query,
-        'limit': '15',
-      };
-      final uri = Uri.parse('${widget.baseUrl}/search_profiles').replace(queryParameters: params);
-      final r = await http.get(uri, headers: {'Content-Type': 'application/json'});
-      if (r.statusCode == 200) {
-        final arr = jsonDecode(r.body);
-        if (arr is List) {
-          setState(() => _supSuggestions = arr
-              .cast<Map<String, dynamic>>()
+
+    if (r.statusCode != 200) {
+      setState(() {
+        _loadError = 'HTTP ${r.statusCode}';
+        _loading = false;
+      });
+      return;
+    }
+
+    final decoded = jsonDecode(r.body) as Map<String, dynamic>;
+    final p = Map<String, dynamic>.from(decoded['profile'] ?? {});
+    _original = Map<String, dynamic>.from(p);
+
+    _nameCtl.text = (p['full_name'] ?? '').toString();
+    _phoneCtl.text = (p['phone'] ?? '').toString();
+    _emailCtl.text = (p['email'] ?? '').toString();
+    _subroleCtl.text = (p['subrole'] ?? '').toString();
+    _zoneCtl.text = (p['zone'] ?? '').toString();
+    _dateJoinedCtl.text = (p['date_joined'] ?? '').toString();
+
+    _role = canonUpper(p['role']);
+    _position = canonLower(p['position']);
+
+    _supervisorNameCtl.text = (p['supervisor_name'] ?? '').toString();
+    _nationalSupervisorNameCtl.text =
+        (p['national_supervisor_name'] ?? '').toString();
+
+    setState(() => _loading = false);
+  } catch (e) {
+    if (!mounted) return;
+
+    setState(() {
+      _loadError = e.toString();
+      _loading = false;
+    });
+  }
+}
+Future<void> _handleUnauthorized() async {
+  await ApiHelper.clearToken();
+
+  if (!mounted) return;
+
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(
+      content: Text('Session expired. Please log in again.'),
+    ),
+  );
+
+  Navigator.of(context).pop({'updated': false});
+}
+
+Future<void> _searchSupervisors(String q) async {
+  final query = q.trim();
+
+  if (query.isEmpty) {
+    setState(() => _supSuggestions = []);
+    return;
+  }
+
+  setState(() => _searchingSup = true);
+
+  try {
+    final params = <String, String>{
+      'username': 'x',
+      'position': 'supervisor',
+      'role': _role,
+      'query': query,
+      'limit': '15',
+    };
+
+    final queryString = Uri(queryParameters: params).query;
+    final r = await ApiHelper.get('/search_profiles?$queryString');
+
+    if (!mounted) return;
+
+    if (r.statusCode == 401) {
+      await _handleUnauthorized();
+      return;
+    }
+
+    if (r.statusCode == 200) {
+      final arr = jsonDecode(r.body);
+
+      if (arr is List) {
+        setState(() {
+          _supSuggestions = arr
+              .map((e) => Map<String, dynamic>.from(e as Map))
               .where((m) => canonLower(m['position']) == 'supervisor')
-              .toList());
-        } else {
-          setState(() => _supSuggestions = []);
-        }
+              .toList();
+        });
       } else {
         setState(() => _supSuggestions = []);
       }
-    } catch (_) {
+    } else {
       setState(() => _supSuggestions = []);
-    } finally {
-      if (mounted) setState(() => _searchingSup = false);
     }
+  } catch (e) {
+    debugPrint('Supervisor search error: $e');
+
+    if (!mounted) return;
+    setState(() => _supSuggestions = []);
+  } finally {
+    if (mounted) setState(() => _searchingSup = false);
+  }
+}
+Future<void> _searchNationalSupervisors(String q) async {
+  final query = q.trim();
+
+  if (query.isEmpty) {
+    setState(() => _nsSuggestions = []);
+    return;
   }
 
-  Future<void> _searchNationalSupervisors(String q) async {
-    final query = q.trim();
-    if (query.isEmpty) {
-      setState(() => _nsSuggestions = []);
+  setState(() => _searchingNS = true);
+
+  try {
+    final params = <String, String>{
+      'username': 'x',
+      'position': 'national supervisor',
+      'role': _role,
+      'query': query,
+      'limit': '15',
+    };
+
+    final queryString = Uri(queryParameters: params).query;
+    final r = await ApiHelper.get('/search_profiles?$queryString');
+
+    if (!mounted) return;
+
+    if (r.statusCode == 401) {
+      await _handleUnauthorized();
       return;
     }
-    setState(() => _searchingNS = true);
-    try {
-      final params = <String, String>{
-        'username': 'x',
-        'position': 'national supervisor',
-        'role': _role,
-        'query': query,
-        'limit': '15',
-      };
-      final uri = Uri.parse('${widget.baseUrl}/search_profiles').replace(queryParameters: params);
-      final r = await http.get(uri, headers: {'Content-Type': 'application/json'});
-      if (r.statusCode == 200) {
-        final arr = jsonDecode(r.body);
-        if (arr is List) {
-          setState(() => _nsSuggestions = arr
-              .cast<Map<String, dynamic>>()
-              .where((m) => canonLower(m['position']) == 'national supervisor')
-              .toList());
-        } else {
-          setState(() => _nsSuggestions = []);
-        }
+
+    if (r.statusCode == 200) {
+      final arr = jsonDecode(r.body);
+
+      if (arr is List) {
+        setState(() {
+          _nsSuggestions = arr
+              .map((e) => Map<String, dynamic>.from(e as Map))
+              .where(
+                (m) => canonLower(m['position']) == 'national supervisor',
+              )
+              .toList();
+        });
       } else {
         setState(() => _nsSuggestions = []);
       }
-    } catch (_) {
+    } else {
       setState(() => _nsSuggestions = []);
-    } finally {
-      if (mounted) setState(() => _searchingNS = false);
     }
+  } catch (e) {
+    debugPrint('National supervisor search error: $e');
+
+    if (!mounted) return;
+    setState(() => _nsSuggestions = []);
+  } finally {
+    if (mounted) setState(() => _searchingNS = false);
   }
+}
 
   Map<String, dynamic> _collectPayload() {
     return <String, dynamic>{
@@ -271,40 +330,46 @@ class _EditProfileSheetState extends State<EditProfileSheet> {
     return diff;
   }
 
-  Future<void> _save() async {
-    if (!_formKey.currentState!.validate()) return;
+Future<void> _save() async {
+  if (!_formKey.currentState!.validate()) return;
 
-    final payload = _collectPayload();
-    final diff = _diffPayload(payload);
+  final payload = _collectPayload();
+  final diff = _diffPayload(payload);
 
-    if (diff.keys.length <= 1) {
-      if (mounted) Navigator.of(context).pop({'updated': false});
+  if (diff.keys.length <= 1) {
+    if (mounted) Navigator.of(context).pop({'updated': false});
+    return;
+  }
+
+  setState(() => _saving = true);
+
+  try {
+    final r = await ApiHelper.put('/profile_update', diff);
+
+    if (!mounted) return;
+
+    if (r.statusCode == 401) {
+      await _handleUnauthorized();
       return;
     }
 
-    setState(() => _saving = true);
-    try {
-      final uri = Uri.parse('${widget.baseUrl}/profile_update');
-      final r = await http.put(uri,
-          headers: {'Content-Type': 'application/json'}, body: jsonEncode(diff));
-
-      if (r.statusCode == 200) {
-        if (mounted) Navigator.of(context).pop({'updated': true});
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Save failed (HTTP ${r.statusCode})')));
-          setState(() => _saving = false);
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Save error: $e')));
-        setState(() => _saving = false);
-      }
+    if (r.statusCode == 200) {
+      Navigator.of(context).pop({'updated': true});
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Save failed (HTTP ${r.statusCode})')),
+      );
+      setState(() => _saving = false);
+    }
+  } catch (e) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Save error: $e')),
+      );
+      setState(() => _saving = false);
     }
   }
+}
 
   @override
   Widget build(BuildContext context) {

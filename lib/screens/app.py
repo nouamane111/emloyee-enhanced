@@ -1,13 +1,35 @@
 # app.py
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import psycopg2
 from datetime import datetime, timedelta, timezone
+from werkzeug.security import generate_password_hash, check_password_hash
+from psycopg2.extras import RealDictCursor
+
+# ✅ ADD THESE NEW IMPORTS
+from flask_jwt_extended import (
+    JWTManager, 
+    create_access_token, 
+    jwt_required, 
+    get_jwt_identity,
+    get_jwt
+)
 
 # ----------------------------------------
 # App
 # ----------------------------------------
 app = Flask(__name__)
+CORS(app)
 
+# ============================================================
+# ✅ JWT CONFIGURATION (ADD THIS)
+# ============================================================
+app.config['JWT_SECRET_KEY'] = 'PMI-LEAP-2025-SECRET-KEY-CHANGE-IN-PRODUCTION-XYZ789'
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=8)  # Token expires after 8 hours
+app.config['JWT_TOKEN_LOCATION'] = ['headers']
+
+jwt = JWTManager(app)
+# ============================================================
 # ----------------------------------------
 # DB
 # ----------------------------------------
@@ -16,8 +38,120 @@ def get_db_connection():
         host="localhost",
         database="ems_db",
         user="postgres",
-        password="nouamane"
+        password="nouamane",
+        port=5433
     )
+def current_user_claims():
+    """Get user info from JWT token (source of truth)"""
+    claims = get_jwt()
+    return {
+        "username": get_jwt_identity(),
+        "role": (claims.get("role") or "").strip(),
+        "subrole": (claims.get("subrole") or "").strip(),
+        "position": (claims.get("position") or "").strip().lower(),
+    }
+
+def is_admin_user():
+    """Check if current user is admin"""
+    user = current_user_claims()
+    return user["role"].lower() == "admin" or user["position"] == "all"
+
+def require_admin():
+    """Require admin access (returns error if not admin)"""
+    if not is_admin_user():
+        return jsonify({"error": "Forbidden: admin access required"}), 403
+    return None
+
+def get_current_profile_id(cur):
+    """Get profile ID of logged-in user"""
+    user = current_user_claims()
+    username = (user["username"] or "").strip().lower()
+    
+    cur.execute("""
+        SELECT id FROM profiles 
+        WHERE LOWER(TRIM(full_name)) = %s 
+        LIMIT 1
+    """, (username,))
+    row = cur.fetchone()
+    
+    if row:
+        return row[0]
+    
+    cur.execute("""
+        SELECT id FROM users 
+        WHERE LOWER(TRIM(username)) = %s 
+        LIMIT 1
+    """, (username,))
+    row = cur.fetchone()
+    
+    return row[0] if row else None
+
+def can_access_profile(cur, target_profile_id):
+    """
+    Central hierarchy permission check.
+
+    Admin:
+      - Can access everything.
+
+    Channel Manager:
+      - Can access all profiles in the same department/category.
+      - Cannot access assessed Channel Managers.
+
+    National Supervisor:
+      - Can access only profiles under their national_supervisor_id.
+      - Cannot access assessed National Supervisors or Channel Managers.
+
+    Supervisor:
+      - Can access only Sales Experts under their supervisor_id.
+    """
+    if is_admin_user():
+        return True
+
+    user = current_user_claims()
+    user_role = (user["role"] or "").strip().upper()
+    position = (user["position"] or "").strip().lower()
+
+    current_profile_id = get_current_profile_id(cur)
+
+    if not current_profile_id:
+        return False
+
+    cur.execute("""
+        SELECT
+            id,
+            role,
+            channel_manager_id,
+            national_supervisor_id,
+            supervisor_id,
+            LOWER(position)
+        FROM profiles
+        WHERE id = %s
+        LIMIT 1
+    """, (target_profile_id,))
+
+    row = cur.fetchone()
+
+    if not row:
+        return False
+
+    target_id, target_role, cm_id, ns_id, sup_id, target_pos = row
+
+    target_role = (target_role or "").strip().upper()
+    target_pos = (target_pos or "").strip().lower()
+
+    if position == "channel manager":
+        return target_role == user_role and target_pos != "channel manager"
+
+    if position == "national supervisor":
+        return (
+            ns_id == current_profile_id
+            and target_pos not in ("national supervisor", "channel manager")
+        )
+
+    if position == "supervisor":
+        return sup_id == current_profile_id and target_pos == "sales expert"
+
+    return False
 
 # ----------------------------------------
 # Helpers (time parsing, filters, etc.)
@@ -253,13 +387,768 @@ def apply_department_filter(dept, where, params):
         where += " AND p.subrole = %s"
         params.append(dept)
     return where, params
+@app.route('/reports/person_filter_options', methods=['POST'])
+@jwt_required()
+def reports_person_filter_options():
+    data = request.get_json() or {}
+    profile_id = data.get('profile_id')
+
+    if not profile_id:
+        return jsonify({
+            "status": "error",
+            "message": "profile_id required"
+        }), 400
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    try:
+        profile_id = int(profile_id)
+
+        # Important hierarchy/security check
+        if not can_access_profile(cur, profile_id):
+            return jsonify({
+                "status": "error",
+                "message": "Forbidden: you cannot access this profile"
+            }), 403
+
+        # Categories answered by this employee only
+        cur.execute("""
+            SELECT DISTINCT
+                TRIM(aco.category_title) AS category_title
+            FROM assessment_category_outcome aco
+            JOIN assessments a ON a.id = aco.assessment_id
+            WHERE a.assessee_id = %s
+              AND a.completed_at IS NOT NULL
+              AND aco.category_title IS NOT NULL
+              AND TRIM(aco.category_title) <> ''
+            ORDER BY TRIM(aco.category_title)
+        """, (profile_id,))
+
+        categories = [row[0] for row in cur.fetchall()]
+
+        # Templates completed by this employee only
+        cur.execute("""
+            SELECT DISTINCT
+                t.id,
+                t.name
+            FROM assessments a
+            JOIN assessmenttemplates t ON t.id = a.template_id
+            WHERE a.assessee_id = %s
+              AND a.completed_at IS NOT NULL
+            ORDER BY t.name
+        """, (profile_id,))
+
+        templates = [
+            {
+                "id": row[0],
+                "name": row[1]
+            }
+            for row in cur.fetchall()
+        ]
+
+        return jsonify({
+            "status": "success",
+            "categories": categories,
+            "templates": templates
+        }), 200
+
+    except Exception as e:
+        print("❌ /reports/person_filter_options:", e)
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+    finally:
+        cur.close()
+        conn.close()
+
+@app.route('/reports/filter_options', methods=['POST'])
+@jwt_required()
+def reports_filter_options():
+    """
+    Role-aware report dropdown/search options.
+    Returns only allowed employees and teams.
+    Also returns controlled comparison roles/subroles.
+    """
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        user = current_user_claims()
+        position = user["position"]
+        user_role = (user["role"] or "").strip().upper()
+        is_admin = is_admin_user()
+
+        # Resolve logged-in profile id using a normal cursor-safe query
+        current_profile_id = None
+        if not is_admin:
+            username = (user["username"] or "").strip().lower()
+
+            cur.execute("""
+                SELECT id
+                FROM profiles
+                WHERE LOWER(TRIM(full_name)) = %s
+                LIMIT 1
+            """, (username,))
+            row = cur.fetchone()
+
+            if row:
+                current_profile_id = row["id"]
+            else:
+                cur.execute("""
+                    SELECT id
+                    FROM users
+                    WHERE LOWER(TRIM(username)) = %s
+                    LIMIT 1
+                """, (username,))
+                row = cur.fetchone()
+                current_profile_id = row["id"] if row else None
+
+            if not current_profile_id:
+                return jsonify({
+                    "status": "error",
+                    "message": "Current profile not found"
+                }), 403
+
+        # ---------------- EMPLOYEES ----------------
+        if is_admin:
+            cur.execute("""
+                SELECT id, full_name, position, role, subrole, zone
+                FROM profiles
+                WHERE LOWER(position) <> 'channel manager'
+                ORDER BY full_name
+            """)
+            employees = [dict(r) for r in cur.fetchall()]
+
+        elif position == "channel manager":
+            cur.execute("""
+                SELECT id, full_name, position, role, subrole, zone
+                FROM profiles
+                WHERE UPPER(role) = %s
+                  AND LOWER(position) <> 'channel manager'
+                ORDER BY full_name
+            """, (user_role,))
+            employees = [dict(r) for r in cur.fetchall()]
+
+        elif position == "national supervisor":
+            cur.execute("""
+                SELECT id, full_name, position, role, subrole, zone
+                FROM profiles
+                WHERE national_supervisor_id = %s
+                  AND LOWER(position) NOT IN ('channel manager', 'national supervisor')
+                ORDER BY full_name
+            """, (current_profile_id,))
+            employees = [dict(r) for r in cur.fetchall()]
+
+        elif position == "supervisor":
+            cur.execute("""
+                SELECT id, full_name, position, role, subrole, zone
+                FROM profiles
+                WHERE supervisor_id = %s
+                  AND LOWER(position) = 'sales expert'
+                ORDER BY full_name
+            """, (current_profile_id,))
+            employees = [dict(r) for r in cur.fetchall()]
+
+        else:
+            employees = []
+
+        # ---------------- TEAMS = SUPERVISOR TEAMS ----------------
+        if is_admin:
+            cur.execute("""
+                SELECT id, full_name, position, role, subrole, zone
+                FROM profiles
+                WHERE LOWER(position) = 'supervisor'
+                ORDER BY full_name
+            """)
+            teams = [dict(r) for r in cur.fetchall()]
+
+        elif position == "channel manager":
+            cur.execute("""
+                SELECT id, full_name, position, role, subrole, zone
+                FROM profiles
+                WHERE LOWER(position) = 'supervisor'
+                  AND UPPER(role) = %s
+                ORDER BY full_name
+            """, (user_role,))
+            teams = [dict(r) for r in cur.fetchall()]
+
+        elif position == "national supervisor":
+            cur.execute("""
+                SELECT id, full_name, position, role, subrole, zone
+                FROM profiles
+                WHERE LOWER(position) = 'supervisor'
+                  AND national_supervisor_id = %s
+                ORDER BY full_name
+            """, (current_profile_id,))
+            teams = [dict(r) for r in cur.fetchall()]
+
+        else:
+            teams = []
+
+        # ---------------- ROLES ----------------
+        roles = ["SFP", "CC", "CE"] if is_admin else []
+
+        # ---------------- SUBROLES / SEGMENTS ----------------
+        subroles = []
+
+        if is_admin:
+            cur.execute("""
+                SELECT DISTINCT
+                    CASE
+                        WHEN UPPER(role) IN ('CC', 'CE') THEN UPPER(role)
+                        ELSE UPPER(TRIM(subrole))
+                    END AS segment
+                FROM profiles
+                WHERE role IS NOT NULL
+                  AND TRIM(role) <> ''
+                  AND (
+                    subrole IS NOT NULL
+                    OR UPPER(role) IN ('CC', 'CE')
+                  )
+                ORDER BY segment
+            """)
+            subroles = [
+                r["segment"] for r in cur.fetchall()
+                if r["segment"] and r["segment"] not in ("ALL", "N/A")
+            ]
+
+            # Make sure business segments exist even if current data is light
+            for forced in ["DIRECT RETAIL", "INDIRECT RETAIL", "LAMP", "CC", "CE"]:
+                if forced not in subroles:
+                    subroles.append(forced)
+
+        elif position == "channel manager":
+            cur.execute("""
+                SELECT DISTINCT UPPER(TRIM(subrole)) AS segment
+                FROM profiles
+                WHERE UPPER(role) = %s
+                  AND subrole IS NOT NULL
+                  AND TRIM(subrole) <> ''
+                ORDER BY segment
+            """, (user_role,))
+            subroles = [
+                r["segment"] for r in cur.fetchall()
+                if r["segment"] and r["segment"] not in ("ALL", "N/A")
+            ]
+
+            if user_role == "SFP":
+                for forced in ["DIRECT RETAIL", "INDIRECT RETAIL", "LAMP"]:
+                    if forced not in subroles:
+                        subroles.append(forced)
+
+        return jsonify({
+            "status": "success",
+            "employees": employees,
+            "teams": teams,
+            "subroles": sorted(set(subroles)),
+            "roles": roles,
+            "categories": [],
+            "templates": []
+        }), 200
+
+    except Exception as e:
+        print("❌ /reports/filter_options:", e)
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+    finally:
+        cur.close()
+        conn.close()
+# ==============================================================================
+# ROUTE 2: /reports/person_trend
+# Get trend data for one person (overall / category / template)
+# ==============================================================================
+ 
+@app.route('/reports/person_trend', methods=['POST'])
+@jwt_required()
+def reports_person_trend():
+    """
+    Get trend analysis for one person.
+    Modes: overall, category, template
+    """
+    try:
+        data = request.get_json() or {}
+        
+        profile_id = data.get('profile_id')
+        trend_type = data.get('trend_type', 'overall')  # overall, category, template
+        category_title = data.get('category_title')
+        template_id = data.get('template_id')
+        date_from = data.get('date_from')
+        date_to = data.get('date_to')
+        
+        if not profile_id:
+            return jsonify({'status': 'error', 'message': 'profile_id required'}), 400
+        
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # ==============================================
+        # MODE A: OVERALL TREND (all assessments)
+        # ==============================================
+        if trend_type == 'overall':
+            query = """
+                SELECT 
+                    a.id,
+                    a.completed_at::date as assessment_date,
+                    a.final_score,
+                    t.name as template_name
+                FROM assessments a
+                LEFT JOIN assessmenttemplates t ON a.template_id = t.id
+                WHERE a.assessee_id = %s
+                  AND a.completed_at IS NOT NULL
+            """
+            params = [profile_id]
+            
+            if date_from:
+                query += " AND a.completed_at >= %s"
+                params.append(date_from)
+            if date_to:
+                query += " AND a.completed_at <= %s"
+                params.append(date_to)
+            
+            query += " ORDER BY a.completed_at"
+            
+            cur.execute(query, params)
+            rows = cur.fetchall()
+            
+            trend = []
+            for row in rows:
+                trend.append({
+                    'date': str(row['assessment_date']),
+                    'score': float(row['final_score']) if row['final_score'] else 0.0,
+                    'template': row['template_name']
+                })
+        
+        # ==============================================
+        # MODE B: CATEGORY TREND (one category over time)
+        # ==============================================
+        elif trend_type == 'category':
+            if not category_title:
+                return jsonify({'status': 'error', 'message': 'category_title required for category trend'}), 400
+            
+            query = """
+                SELECT 
+                    a.id,
+                    a.completed_at::date as assessment_date,
+                    aco.avg_score,
+                    aco.category_title,
+                    t.name as template_name
+                FROM assessments a
+                JOIN assessment_category_outcome aco ON a.id = aco.assessment_id
+                LEFT JOIN assessmenttemplates t ON a.template_id = t.id
+                WHERE a.assessee_id = %s
+                    AND LOWER(TRIM(aco.category_title)) = LOWER(TRIM(%s))
+                    AND a.completed_at IS NOT NULL
+            """
+            params = [profile_id, category_title]
+            
+            if date_from:
+                query += " AND a.completed_at >= %s"
+                params.append(date_from)
+            if date_to:
+                query += " AND a.completed_at <= %s"
+                params.append(date_to)
+            
+            query += " ORDER BY a.completed_at"
+            
+            cur.execute(query, params)
+            rows = cur.fetchall()
+            
+            trend = []
+            for row in rows:
+                # avg_score is already stored as /3.0 scale
+                score_on_3 = float(row['avg_score']) if row['avg_score'] else 0.0
+                
+                trend.append({
+                    'date': str(row['assessment_date']),
+                    'score': score_on_3,
+                    'template': row['template_name']
+                })
+        
+        # ==============================================
+        # MODE C: TEMPLATE TREND (one template over time)
+        # ==============================================
+        elif trend_type == 'template':
+            if not template_id:
+                return jsonify({'status': 'error', 'message': 'template_id required for template trend'}), 400
+            
+            query = """
+                SELECT 
+                    a.id,
+                    a.completed_at::date as assessment_date,
+                    a.final_score,
+                    t.name as template_name
+                FROM assessments a
+                LEFT JOIN assessmenttemplates t ON a.template_id = t.id
+                WHERE a.assessee_id = %s
+                  AND a.template_id = %s
+                  AND a.completed_at IS NOT NULL
+            """
+            params = [profile_id, template_id]
+            
+            if date_from:
+                query += " AND a.completed_at >= %s"
+                params.append(date_from)
+            if date_to:
+                query += " AND a.completed_at <= %s"
+                params.append(date_to)
+            
+            query += " ORDER BY a.completed_at"
+            
+            cur.execute(query, params)
+            rows = cur.fetchall()
+            
+            trend = []
+            for row in rows:
+                trend.append({
+                    'date': str(row['assessment_date']),
+                    'score': float(row['final_score']) if row['final_score'] else 0.0,
+                    'template': row['template_name']
+                })
+        
+        else:
+            return jsonify({'status': 'error', 'message': 'Invalid trend_type'}), 400
+        
+        # ==============================================
+        # CALCULATE SUMMARY STATS
+        # ==============================================
+        summary = {
+            'first_score': None,
+            'latest_score': None,
+            'change': 0.0,
+            'status': 'No data',
+            'count': len(trend)
+        }
+        
+        if trend:
+            first_score = trend[0]['score']
+            latest_score = trend[-1]['score']
+            change = latest_score - first_score
+            
+            summary['first_score'] = first_score
+            summary['latest_score'] = latest_score
+            summary['change'] = round(change, 2)
+            
+            if change > 0.2:
+                summary['status'] = 'Improving'
+            elif change < -0.2:
+                summary['status'] = 'Declining'
+            else:
+                summary['status'] = 'Stable'
+        
+        cur.close()
+        conn.close()
+        
+        return jsonify({
+            'status': 'success',
+            'trend': trend,
+            'summary': summary
+        }), 200
+        
+    except Exception as e:
+        print(f"Error in person_trend: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+ 
+ 
+# ==============================================================================
+# ROUTE 3: /reports/comparison_trend
+# Compare two entities (person vs person, team vs team, etc.)
+# ==============================================================================
+ 
+@app.route('/reports/comparison_trend', methods=['POST'])
+@jwt_required()
+def reports_comparison_trend():
+    """
+    Compare two entities.
+    Types:
+      - person
+      - team
+      - subrole/segment
+      - role
+    """
+    data = request.get_json() or {}
+
+    comparison_type = data.get('comparison_type')
+    left_id = data.get('left_id')
+    right_id = data.get('right_id')
+    left_value = (data.get('left_value') or '').strip()
+    right_value = (data.get('right_value') or '').strip()
+    date_from = data.get('date_from')
+    date_to = data.get('date_to')
+
+    if not comparison_type:
+        return jsonify({'status': 'error', 'message': 'comparison_type required'}), 400
+
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        user = current_user_claims()
+        position = user["position"]
+        user_role = (user["role"] or "").strip().upper()
+
+        def segment_condition(value):
+            value_up = (value or "").strip().upper()
+
+            if value_up in ("SFP", "CC", "CE"):
+                return "UPPER(p.role) = %s", [value_up]
+
+            return "UPPER(TRIM(p.subrole)) = %s", [value_up]
+
+        def apply_date_filter(query, params):
+            if date_from:
+                query += " AND a.completed_at >= %s"
+                params.append(date_from)
+            if date_to:
+                query += " AND a.completed_at <= %s"
+                params.append(date_to)
+            return query, params
+
+        def security_scope_for_profiles():
+            """
+            Extra security for comparison.
+            Admin: no extra restriction.
+            Channel Manager: same role except Channel Managers.
+            National Supervisor: own downline, no NS/CM.
+            Supervisor: own Sales Experts.
+            """
+            if is_admin_user():
+                return "", []
+
+            current_profile_id = get_current_profile_id(conn.cursor())
+
+            if not current_profile_id:
+                return " AND 1=0", []
+
+            if position == "channel manager":
+                return """
+                    AND UPPER(p.role) = %s
+                    AND LOWER(p.position) <> 'channel manager'
+                """, [user_role]
+
+            if position == "national supervisor":
+                return """
+                    AND p.national_supervisor_id = %s
+                    AND LOWER(p.position) NOT IN ('national supervisor', 'channel manager')
+                """, [current_profile_id]
+
+            if position == "supervisor":
+                return """
+                    AND p.supervisor_id = %s
+                    AND LOWER(p.position) = 'sales expert'
+                """, [current_profile_id]
+
+            return " AND 1=0", []
+
+        security_sql, security_params = security_scope_for_profiles()
+
+        def get_entity_trend(entity_type, entity_id=None, entity_value=None):
+            if entity_type == 'person':
+                # Access check
+                check_cur = conn.cursor()
+                allowed = can_access_profile(check_cur, int(entity_id))
+                check_cur.close()
+
+                if not allowed:
+                    return []
+
+                query = """
+                    SELECT
+                        a.completed_at::date AS assessment_date,
+                        a.final_score
+                    FROM assessments a
+                    JOIN profiles p ON p.id = a.assessee_id
+                    WHERE a.assessee_id = %s
+                      AND a.completed_at IS NOT NULL
+                """
+                params = [entity_id]
+
+            elif entity_type == 'team':
+                query = """
+                    SELECT
+                        a.completed_at::date AS assessment_date,
+                        AVG(a.final_score) AS final_score
+                    FROM assessments a
+                    JOIN profiles p ON p.id = a.assessee_id
+                    WHERE p.supervisor_id = %s
+                      AND a.completed_at IS NOT NULL
+                """
+                params = [entity_id]
+                query += security_sql
+                params.extend(security_params)
+
+            elif entity_type == 'subrole':
+                condition_sql, condition_params = segment_condition(entity_value)
+
+                query = f"""
+                    SELECT
+                        a.completed_at::date AS assessment_date,
+                        AVG(a.final_score) AS final_score
+                    FROM assessments a
+                    JOIN profiles p ON p.id = a.assessee_id
+                    WHERE {condition_sql}
+                      AND a.completed_at IS NOT NULL
+                """
+                params = condition_params
+                query += security_sql
+                params.extend(security_params)
+
+            elif entity_type == 'role':
+                if not is_admin_user():
+                    return []
+
+                query = """
+                    SELECT
+                        a.completed_at::date AS assessment_date,
+                        AVG(a.final_score) AS final_score
+                    FROM assessments a
+                    JOIN profiles p ON p.id = a.assessee_id
+                    WHERE UPPER(p.role) = %s
+                      AND a.completed_at IS NOT NULL
+                """
+                params = [(entity_value or "").strip().upper()]
+
+            else:
+                return []
+
+            query, params = apply_date_filter(query, params)
+
+            if entity_type in ['team', 'subrole', 'role']:
+                query += " GROUP BY a.completed_at::date"
+
+            query += " ORDER BY assessment_date"
+
+            cur.execute(query, params)
+            rows = cur.fetchall()
+
+            return [{
+                'date': str(row['assessment_date']),
+                'score': float(row['final_score']) if row['final_score'] is not None else 0.0
+            } for row in rows]
+
+        if comparison_type == 'person':
+            if not left_id or not right_id:
+                return jsonify({'status': 'error', 'message': 'left_id and right_id required'}), 400
+
+            cur.execute("SELECT full_name FROM profiles WHERE id = %s", (left_id,))
+            left_row = cur.fetchone()
+            left_name = left_row['full_name'] if left_row else f"Person {left_id}"
+
+            cur.execute("SELECT full_name FROM profiles WHERE id = %s", (right_id,))
+            right_row = cur.fetchone()
+            right_name = right_row['full_name'] if right_row else f"Person {right_id}"
+
+            left_trend = get_entity_trend('person', entity_id=left_id)
+            right_trend = get_entity_trend('person', entity_id=right_id)
+
+        elif comparison_type == 'team':
+            if not left_id or not right_id:
+                return jsonify({'status': 'error', 'message': 'left_id and right_id required'}), 400
+
+            cur.execute("SELECT full_name FROM profiles WHERE id = %s", (left_id,))
+            left_row = cur.fetchone()
+            left_name = f"{left_row['full_name']} Team" if left_row else f"Team {left_id}"
+
+            cur.execute("SELECT full_name FROM profiles WHERE id = %s", (right_id,))
+            right_row = cur.fetchone()
+            right_name = f"{right_row['full_name']} Team" if right_row else f"Team {right_id}"
+
+            left_trend = get_entity_trend('team', entity_id=left_id)
+            right_trend = get_entity_trend('team', entity_id=right_id)
+
+        elif comparison_type == 'subrole':
+            if not left_value or not right_value:
+                return jsonify({'status': 'error', 'message': 'left_value and right_value required'}), 400
+
+            left_name = left_value
+            right_name = right_value
+            left_trend = get_entity_trend('subrole', entity_value=left_value)
+            right_trend = get_entity_trend('subrole', entity_value=right_value)
+
+        elif comparison_type == 'role':
+            if not left_value or not right_value:
+                return jsonify({'status': 'error', 'message': 'left_value and right_value required'}), 400
+
+            if not is_admin_user():
+                return jsonify({'status': 'error', 'message': 'Role comparison is admin-only'}), 403
+
+            left_name = left_value.upper()
+            right_name = right_value.upper()
+            left_trend = get_entity_trend('role', entity_value=left_value)
+            right_trend = get_entity_trend('role', entity_value=right_value)
+
+        else:
+            return jsonify({'status': 'error', 'message': 'Invalid comparison_type'}), 400
+
+        def change_of(trend):
+            if len(trend) < 2:
+                return 0.0
+            return round(trend[-1]['score'] - trend[0]['score'], 2)
+
+        def avg_of(trend):
+            if not trend:
+                return 0.0
+            return round(sum(t['score'] for t in trend) / len(trend), 2)
+
+        left_change = change_of(left_trend)
+        right_change = change_of(right_trend)
+        left_avg = avg_of(left_trend)
+        right_avg = avg_of(right_trend)
+
+        if left_change > right_change:
+            winner = left_name
+            insight = f"{left_name} improved faster ({left_change:+.2f}) than {right_name} ({right_change:+.2f})."
+        elif right_change > left_change:
+            winner = right_name
+            insight = f"{right_name} improved faster ({right_change:+.2f}) than {left_name} ({left_change:+.2f})."
+        else:
+            winner = "Tie"
+            insight = f"Both sides show the same change ({left_change:+.2f})."
+
+        return jsonify({
+            'status': 'success',
+            'left': {
+                'label': left_name,
+                'trend': left_trend
+            },
+            'right': {
+                'label': right_name,
+                'trend': right_trend
+            },
+            'summary': {
+                'left_label': left_name,
+                'right_label': right_name,
+                'winner': winner,
+                'left_change': left_change,
+                'right_change': right_change,
+                'left_avg': left_avg,
+                'right_avg': right_avg,
+                'insight': insight
+            }
+        }), 200
+
+    except Exception as e:
+        print("❌ /reports/comparison_trend:", e)
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+    finally:
+        cur.close()
+        conn.close()
 
 # ----------------------------------------
 # PROFILE ROUTES
 # ----------------------------------------
 @app.route('/add_profile', methods=['POST'])
+@jwt_required()
 def add_profile():
     data = request.json
+
+
+    admin_error = require_admin()
+    if admin_error:
+        return admin_error
 
     role = (data.get('role') or '').strip()                       # 'Admin' | 'SFP' | 'CC' | 'CE'
     subrole = (data.get('subrole') or '').strip()
@@ -294,22 +1183,22 @@ def add_profile():
     national_supervisor_id = get_profile_id_by_full_name(national_supervisor_name)
 
     try:
-        # ---------------- Admin ----------------
         if role == 'Admin':
             if not username or not password:
                 conn.rollback()
                 return jsonify({'error': 'Admin requires username and password'}), 400
 
+            hashed_password = generate_password_hash(password)
+
             cur.execute("""
                 INSERT INTO users (username, password, role, subrole, position)
                 VALUES (%s, %s, 'Admin', 'ALL', 'ALL')
-            """, (username, password))
+            """, (username, hashed_password))
 
             cur.execute("""
                 INSERT INTO profiles (full_name, role, subrole, position, zone, date_joined)
                 VALUES (%s, %s, %s, %s, %s, %s)
             """, (full_name, 'Admin', 'ALL', 'ALL', zone, date_joined))
-
         # ---------------- SFP ----------------
         elif role == 'SFP':
             both_supers_positions = {'Sales expert', 'Brand ambassador', 'Brand representative', 'Brand representatives'}
@@ -337,10 +1226,12 @@ def add_profile():
                     conn.rollback()
                     return jsonify({'error': 'SFP Supervisor requires national_supervisor_name that exists in profiles.full_name.'}), 400
 
+                hashed_password = generate_password_hash(password)
+
                 cur.execute("""
                     INSERT INTO users (username, password, role, subrole, position)
                     VALUES (%s, %s, %s, %s, %s)
-                """, (username, password, role, subrole, position))
+                """, (username, hashed_password, role, subrole, position))
 
                 cur.execute("""
                     INSERT INTO profiles (
@@ -356,10 +1247,12 @@ def add_profile():
                     conn.rollback()
                     return jsonify({'error': f'SFP {position} requires username and password'}), 400
 
+                hashed_password = generate_password_hash(password)
+
                 cur.execute("""
                     INSERT INTO users (username, password, role, subrole, position)
                     VALUES (%s, %s, %s, %s, %s)
-                """, (username, password, role, subrole, position))
+                """, (username, hashed_password, role, subrole, position))
 
                 cur.execute("""
                     INSERT INTO profiles (full_name, role, subrole, position, zone, date_joined)
@@ -377,10 +1270,12 @@ def add_profile():
                     conn.rollback()
                     return jsonify({'error': 'CE Supervisor requires username and password'}), 400
 
+                hashed_password = generate_password_hash(password)
+
                 cur.execute("""
                     INSERT INTO users (username, password, role, subrole, position)
                     VALUES (%s, %s, %s, %s, %s)
-                """, (username, password, role, subrole or 'N/A', position))
+                """, (username, hashed_password, role, subrole or 'N/A', position))
 
                 cur.execute("""
                     INSERT INTO profiles (full_name, role, subrole, position, zone, date_joined)
@@ -413,10 +1308,12 @@ def add_profile():
                     conn.rollback()
                     return jsonify({'error': 'CC Supervisor requires username and password'}), 400
 
+                hashed_password = generate_password_hash(password)
+
                 cur.execute("""
                     INSERT INTO users (username, password, role, subrole, position)
                     VALUES (%s, %s, %s, %s, %s)
-                """, (username, password, role, subrole or 'N/A', position))
+                """, (username, hashed_password, role, subrole or 'N/A', position))
 
                 cur.execute("""
                     INSERT INTO profiles (full_name, role, subrole, position, zone, date_joined)
@@ -432,11 +1329,12 @@ def add_profile():
                     conn.rollback()
                     return jsonify({'error': 'CC Sales promoters requires supervisor_name and national_supervisor_name that exist in profiles.full_name.'}), 400
 
+                hashed_password = generate_password_hash(password)
+
                 cur.execute("""
                     INSERT INTO users (username, password, role, subrole, position)
                     VALUES (%s, %s, %s, %s, %s)
-                """, (username, password, role, subrole or 'N/A', position))
-
+                """, (username, hashed_password, role, subrole or 'N/A', position))
                 cur.execute("""
                     INSERT INTO profiles (
                         full_name, role, subrole, position,
@@ -467,20 +1365,22 @@ def add_profile():
 
 
 @app.route('/profiles_visible', methods=['GET'])
+@jwt_required()
 def profiles_visible():
-    username_raw = (request.args.get('username') or '').strip()
-    position = (request.args.get('position') or '').strip().lower()
+    # ✅ GET FROM JWT TOKEN (Source of truth)
+    user = current_user_claims()
+    username_raw = user["username"]
+    position = user["position"]
+    user_role = user["role"]
+
+    # Frontend can still send 'role' as a FILTER (which dept to show)
     force_role = (request.args.get('role') or '').strip().upper()
+
+    # Frontend can send search query
     q = (request.args.get('q') or '').strip()
 
-    # robust admin detection
-    role_lc = (request.args.get('role') or '').strip().lower()
-    is_admin = (position == 'all') or (role_lc == 'admin')
-
-    if not position:
-        return jsonify({'error': 'position is required'}), 400
-    if not is_admin and not username_raw:
-        return jsonify({'error': 'username is required for non-admin positions'}), 400
+    # ✅ Admin detection using JWT
+    is_admin = (position == 'all') or (user_role.lower() == 'admin')
 
     like = f"%{q}%"
     try:
@@ -509,7 +1409,8 @@ def profiles_visible():
     """
     order_sql = "ORDER BY full_name ASC" if order != 'position' else f"ORDER BY {position_rank_case}, full_name ASC"
 
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     try:
         # -------------------- ADMIN-LIKE (no scoping) --------------------
         if is_admin:
@@ -595,18 +1496,18 @@ def profiles_visible():
             params.append(me_role_eff)
 
         if position == 'channel manager':
-            # Only downline of THIS channel manager
-            where.append("channel_manager_id = %s")
-            params.append(me_id)
-            # never include other channel managers
+            # Channel Manager sees everyone in their department/category,
+            # except other Channel Managers.
+            where.append("role = %s")
+            params.append(user_role.upper())
             where.append("LOWER(position) <> 'channel manager'")
 
         elif position == 'national supervisor':
-            # Only their pipe: supervisors + sales experts where national_supervisor_id = me_id
+            # National Supervisor sees only supervisors and field profiles under them.
+            # They should not see Channel Managers or other National Supervisors.
             where.append("national_supervisor_id = %s")
             params.append(me_id)
-            # explicitly exclude channel managers and other national supervisors
-            where.append("LOWER(position) NOT IN ('channel manager','national supervisor')")
+            where.append("LOWER(position) NOT IN ('channel manager', 'national supervisor')")
 
         elif position == 'supervisor':
             # Only their sales experts
@@ -649,7 +1550,8 @@ def profiles_visible():
     except Exception as e:
         return jsonify({'error': 'internal server error', 'detail': str(e)}), 500
     finally:
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
 
 
 
@@ -659,37 +1561,81 @@ def profiles_visible():
 # ----------------------------------------
 @app.route('/login', methods=['POST'])
 def login():
+    """
+    SECURE LOGIN - Returns JWT token for authentication.
+    """
     data = request.get_json()
     username = data.get('username')
     password = data.get('password')
 
-    conn = get_db_connection(); cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE username = %s AND password = %s", (username, password))
-    user = cur.fetchone()
-    cur.close(); conn.close()
-
-    if user:
+    if not username or not password:
         return jsonify({
-            "success": True,
-            "message": "Login successful",
-            "username": user[1],
-            "role": str(user[3]),
-            "subrole": str(user[5]),
-            "position": str(user[6])
-        }), 200
-    else:
-        return jsonify({"success": False, "message": "Invalid credentials"}), 401
+            "success": False, 
+            "message": "Username and password required"
+        }), 400
 
-@app.route("/", methods=["GET"])
-def home():
-    return "Backend is running!"
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    try:
+        cur.execute("SELECT * FROM users WHERE username = %s", (username,))
+        user = cur.fetchone()
+
+        if user and check_password_hash(user[2], password):
+            # ✅ User found - Create JWT token with user data
+            user_data = {
+                "username": str(user[1]),
+                "role": str(user[3]),
+                "subrole": str(user[5]),
+                "position": str(user[6])
+            }
+            
+            # ✅ Create JWT access token (expires in 8 hours)
+            access_token = create_access_token(
+                identity=username,
+                additional_claims=user_data
+            )
+            
+            print(f"✅ Login successful: {username}")  # Debug log
+            
+            return jsonify({
+                "success": True,
+                "message": "Login successful",
+                "access_token": access_token,  # ✅ NEW: JWT token
+                "username": str(user[1]),
+                "role": str(user[3]),
+                "subrole": str(user[5]),
+                "position": str(user[6])
+            }), 200
+        else:
+            print(f"❌ Login failed: Invalid credentials for {username}")
+            return jsonify({
+                "success": False, 
+                "message": "Invalid credentials"
+            }), 401
+            
+    except Exception as e:
+        print("❌ Login error:", str(e))
+        return jsonify({
+            "success": False, 
+            "message": "Login failed"
+        }), 500
+    finally:
+        cur.close()
+        conn.close()
 
 # ----------------------------------------
 # Templates
 # ----------------------------------------
 @app.route('/create_template', methods=['POST'])
+@jwt_required()
 def create_template():
     data = request.get_json()
+
+
+    admin_error = require_admin()
+    if admin_error:
+        return admin_error
 
     template_name = data.get('templateName')
     description = data.get('description', '')
@@ -737,9 +1683,80 @@ def create_template():
     finally:
         cur.close(); conn.close()
 
+@app.route('/delete_profile', methods=['POST'])
+@jwt_required()
+def delete_profile():
+    admin_error = require_admin()
+    if admin_error:
+        return admin_error
+
+    data = request.get_json() or {}
+    profile_id = data.get('id')
+
+    if not profile_id:
+        return jsonify({'error': 'Profile id is required'}), 400
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    try:
+        # Make sure the profile exists first
+        cur.execute("""
+            SELECT full_name, role, position
+            FROM profiles
+            WHERE id = %s
+        """, (profile_id,))
+        profile = cur.fetchone()
+
+        if not profile:
+            return jsonify({'error': 'Profile not found'}), 404
+
+        full_name, role, position = profile
+
+        # Delete matching login account if this profile has one.
+        # This works because your users.username usually matches profiles.full_name.
+        cur.execute("""
+            DELETE FROM users
+            WHERE LOWER(TRIM(username)) = LOWER(TRIM(%s))
+        """, (full_name,))
+
+        # Delete profile.
+        # If this profile is referenced by assessments or hierarchy IDs,
+        # PostgreSQL may block deletion depending on FK constraints.
+        cur.execute("""
+            DELETE FROM profiles
+            WHERE id = %s
+        """, (profile_id,))
+
+        conn.commit()
+
+        return jsonify({
+            'status': 'success',
+            'message': f'Profile "{full_name}" deleted successfully'
+        }), 200
+
+    except Exception as e:
+        conn.rollback()
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
+
+    finally:
+        cur.close()
+        conn.close()
+
 @app.route('/delete_template', methods=['POST'])
+@jwt_required()
 def delete_template():
     data = request.get_json()
+
+
+    admin_error = require_admin()
+    if admin_error:
+        return admin_error
+
+
     template_name = data.get('name')
     conn = get_db_connection(); cur = conn.cursor()
     try:
@@ -753,6 +1770,7 @@ def delete_template():
         cur.close(); conn.close()
 
 @app.route('/get_assessment_initiate', methods=['POST'])
+@jwt_required()
 def get_assessment_initiate():
     data = request.get_json()
     template_name = data.get('template_name')
@@ -795,33 +1813,120 @@ def get_assessment_initiate():
     finally:
         cur.close(); conn.close()
 
-@app.route('/get_templates', methods=['POST'])
-def get_templates():
-    data = request.get_json()
-    role = data.get('role')
-    subrole = data.get('subrole')
 
-    conn = get_db_connection(); cur = conn.cursor()
+@app.route('/get_templates', methods=['POST'])
+@jwt_required()
+def get_templates():
+    """
+    Secure template listing.
+
+    Admin:
+      - Sees all templates.
+
+    Channel Manager:
+      - Sees templates in their department/category.
+      - Cannot see templates targeting Channel Managers.
+
+    National Supervisor:
+      - Sees templates in their department/category and subrole.
+      - Cannot see templates targeting National Supervisors or Channel Managers.
+
+    Supervisor:
+      - Sees only field-level / Sales Expert templates in their department/category and subrole.
+    """
+    data = request.get_json() or {}
+
+    user = current_user_claims()
+    user_role = (user["role"] or "").strip().upper()
+    user_subrole = (user["subrole"] or "").strip()
+    user_position = (user["position"] or "").strip().lower()
+
+    selected_role = (data.get("role") or "").strip().upper()
+    selected_subrole = (data.get("subrole") or "").strip()
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
     try:
-        if role and subrole:
-            cur.execute("""
-                SELECT name, role, subrole, created_by, created_at, position 
-                FROM assessmenttemplates
-                WHERE LOWER(role) = %s AND LOWER(subrole) = %s
-            """, (role.lower(), subrole.lower()))
-        elif role:
-            cur.execute("""
-                SELECT name, role, subrole, created_by, created_at, position 
-                FROM assessmenttemplates
-                WHERE UPPER(role) = %s
-            """, (role.upper(),))
-        else:
-            cur.execute("""
-                SELECT name, role, subrole, created_by, created_at, position 
-                FROM assessmenttemplates
+        where_clauses = []
+        params = []
+
+        if is_admin_user():
+            if selected_role:
+                where_clauses.append("UPPER(role) = %s")
+                params.append(selected_role)
+
+            if selected_subrole:
+                where_clauses.append("LOWER(subrole) = LOWER(%s)")
+                params.append(selected_subrole)
+
+        elif user_position == "channel manager":
+            where_clauses.append("UPPER(role) = %s")
+            params.append(user_role)
+
+            if selected_subrole:
+                where_clauses.append("LOWER(subrole) = LOWER(%s)")
+                params.append(selected_subrole)
+
+            where_clauses.append("LOWER(position) <> 'channel manager'")
+
+        elif user_position == "national supervisor":
+            where_clauses.append("UPPER(role) = %s")
+            params.append(user_role)
+
+            if selected_subrole:
+                where_clauses.append("LOWER(subrole) = LOWER(%s)")
+                params.append(selected_subrole)
+            elif user_subrole and user_subrole.upper() != "ALL":
+                where_clauses.append("LOWER(subrole) = LOWER(%s)")
+                params.append(user_subrole)
+
+            where_clauses.append("""
+                LOWER(position) NOT IN ('national supervisor', 'channel manager')
             """)
 
+        elif user_position == "supervisor":
+            where_clauses.append("UPPER(role) = %s")
+            params.append(user_role)
+
+            if selected_subrole:
+                where_clauses.append("LOWER(subrole) = LOWER(%s)")
+                params.append(selected_subrole)
+            elif user_subrole and user_subrole.upper() != "ALL":
+                where_clauses.append("LOWER(subrole) = LOWER(%s)")
+                params.append(user_subrole)
+
+            where_clauses.append("""
+                LOWER(position) IN (
+                    'sales expert',
+                    'brand representative',
+                    'brand representatives',
+                    'brand ambassador',
+                    'sales promoters',
+                    'promoters'
+                )
+            """)
+
+        else:
+            where_clauses.append("1=0")
+
+        where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+
+        cur.execute(f"""
+            SELECT
+                name,
+                role,
+                subrole,
+                created_by,
+                created_at,
+                position
+            FROM assessmenttemplates
+            {where_sql}
+            ORDER BY created_at DESC
+        """, params)
+
         rows = cur.fetchall()
+
         templates = [{
             "name": r[0],
             "role": r[1],
@@ -830,25 +1935,35 @@ def get_templates():
             "created_at": r[4].strftime('%Y-%m-%d %H:%M:%S') if r[4] else '',
             "position": r[5]
         } for r in rows]
+
         return jsonify({'templates': templates}), 200
+
     except Exception as e:
+        print("❌ Error in /get_templates:", str(e))
         return jsonify({'error': str(e)}), 500
+
     finally:
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
+
 
 # ----------------------------------------
 # Submit assessment
 # ----------------------------------------
 @app.route('/submit_assessment', methods=['POST'])
+@jwt_required()
 def submit_assessment():
     data = request.get_json()
 
-    assessor_username = data.get('assessor_username')
+# ✅ SECURITY: Get assessor from JWT (can't be faked)
+    assessor_username = get_jwt_identity()
+    
+    # Frontend sends these (we'll validate them)
     assessed_name     = data.get('assessed_name')
     template_name     = data.get('template_name')
     answers           = data.get('answers', [])
 
-    if not (assessor_username and assessed_name and template_name and answers):
+    if not (assessed_name and template_name and answers):
         return jsonify({'error': 'Missing required fields'}), 400
 
     conn = get_db_connection(); cur = conn.cursor()
@@ -870,6 +1985,12 @@ def submit_assessment():
         if not prow:
             return jsonify({'error': f'Assessee \"{assessed_name}\" not found'}), 404
         assessee_id, assessee_name_db = prow[0], prow[1]
+
+        # ✅ SECURITY: Check if assessor can assess this person
+        if not can_access_profile(cur, assessee_id):
+            cur.close()
+            conn.close()
+            return jsonify({'error': 'Forbidden: you cannot assess this person'}), 403
 
         # Assessor (user)
         cur.execute("SELECT id FROM users WHERE LOWER(TRIM(username)) = %s", (assessor_username,))
@@ -1006,6 +2127,7 @@ def submit_assessment():
 # Search profiles (typeahead)
 # ----------------------------------------
 @app.route('/search_profiles', methods=['GET'])
+@jwt_required()
 def search_profiles():
     """
     Query params:
@@ -1015,15 +2137,18 @@ def search_profiles():
       - role (optional): SFP/CE/CC
       - limit (optional): default 25
     """
-    username_raw = (request.args.get('username') or '').strip()
-    position = (request.args.get('position') or '').strip().lower()
+# ✅ GET FROM JWT TOKEN (Source of truth)
+    user = current_user_claims()
+    username_raw = user["username"]
+    position = user["position"]
+    
+    # Frontend sends search query and optional role filter
     q = (request.args.get('query') or '').strip()
     force_role = (request.args.get('role') or '').strip().upper()
-
-    if not position or not q:
-        return jsonify({'error': 'position and query are required'}), 400
-    if position != 'all' and not username_raw:
-        return jsonify({'error': 'username is required for non-admin positions'}), 400
+    
+    # Validation
+    if not q:
+        return jsonify({'error': 'query is required'}), 400
 
     like = f"%{q}%"
     try:
@@ -1094,8 +2219,8 @@ def search_profiles():
                 SELECT id, full_name, role AS category, subrole, position
                 FROM profiles
                 WHERE role = %s
-                  AND full_name ILIKE %s
-                  AND LOWER(position) <> 'channel manager'
+                AND full_name ILIKE %s
+                AND LOWER(position) <> 'channel manager'
                 ORDER BY full_name ASC
                 LIMIT %s
             """, (me_role, like, limit))
@@ -1105,8 +2230,9 @@ def search_profiles():
                 SELECT id, full_name, role AS category, subrole, position
                 FROM profiles
                 WHERE role = %s
-                  AND national_supervisor_id = %s
-                  AND full_name ILIKE %s
+                AND national_supervisor_id = %s
+                AND LOWER(position) NOT IN ('channel manager', 'national supervisor')
+                AND full_name ILIKE %s
                 ORDER BY full_name ASC
                 LIMIT %s
             """, (me_role, me_id, like, limit))
@@ -1155,10 +2281,97 @@ def search_profiles():
 # Assessment history/result
 # ----------------------------------------
 @app.route('/get_assessment_history', methods=['POST'])
+@jwt_required()
 def get_assessment_history():
-    conn = get_db_connection(); cur = conn.cursor()
+    """
+    SECURE VERSION - Filters assessments by user hierarchy.
+    Only returns assessments the user is authorized to see.
+    """
+    data = request.json or {}
+    
+    # ✅ GET FROM JWT TOKEN (Source of truth - can't be faked)
+    user = current_user_claims()
+    username = user["username"]
+    position = user["position"]
+    user_role = user["role"]
+    
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
     try:
-        cur.execute("""
+        # ============================================================
+        # SECURITY: Build WHERE clause based on user's position
+        # ============================================================
+        
+        if position == 'all':
+            # ✅ ADMIN - See everything
+            where_clause = "a.completed_at IS NOT NULL"
+            where_params = []
+            
+        else:
+            # ✅ NON-ADMIN - Apply hierarchy filtering
+            
+            # First, get the user's profile ID
+            cur.execute("""
+                SELECT id FROM profiles 
+                WHERE LOWER(TRIM(full_name)) = %s
+                LIMIT 1
+            """, (username.lower(),))
+            user_row = cur.fetchone()
+            
+            if not user_row:
+                # Try fallback to users table
+                cur.execute("""
+                    SELECT id FROM users 
+                    WHERE LOWER(TRIM(username)) = %s
+                    LIMIT 1
+                """, (username.lower(),))
+                user_row = cur.fetchone()
+            
+            if not user_row:
+                return jsonify({
+                    'status': 'error', 
+                    'message': f'User "{username}" not found'
+                }), 403
+            
+            user_id = user_row[0]
+            
+            if position == 'channel manager':
+                # Channel Manager sees all completed assessments for their department/category.
+                # Example: SFP Channel Manager sees all SFP assessment history.
+                where_clause = """
+                    a.completed_at IS NOT NULL
+                    AND p.role = %s
+                    AND LOWER(p.position) <> 'channel manager'
+                """
+                where_params = [user_role.upper()]
+                
+            elif position == 'national supervisor':
+                where_clause = """
+                    a.completed_at IS NOT NULL
+                    AND p.national_supervisor_id = %s
+                    AND LOWER(p.position) NOT IN ('national supervisor', 'channel manager')
+                """
+                where_params = [user_id]
+            elif position == 'supervisor':
+                where_clause = """
+                    a.completed_at IS NOT NULL
+                    AND p.supervisor_id = %s
+                    AND LOWER(p.position) = 'sales expert'
+                """
+                where_params = [user_id]
+                
+            else:
+                # Unknown position - return empty (safe default)
+                return jsonify({
+                    'status': 'success', 
+                    'history': []
+                }), 200
+        
+        # ============================================================
+        # Execute SECURE query
+        # ============================================================
+        query = f"""
             SELECT
                 a.id,
                 p.full_name AS assessee_name,
@@ -1173,21 +2386,28 @@ def get_assessment_history():
             FROM assessments a
             LEFT JOIN assessmenttemplates t ON a.template_id = t.id
             LEFT JOIN profiles p ON a.assessee_id = p.id
-            WHERE a.completed_at IS NOT NULL
+            WHERE {where_clause}
             ORDER BY a.completed_at DESC
-        """)
+        """
+        
+        cur.execute(query, where_params)
         rows = cur.fetchall()
+        
         cols = ['id','assessee_name','assessor_name','template_name','final_score','completed_at',
                 'assessee_role','assessee_subrole','assessee_position','template_subrole']
         history = [dict(zip(cols, r)) for r in rows]
+        
         return jsonify({'status': 'success', 'history': history}), 200
+        
     except Exception as e:
         print("❌ Error in /get_assessment_history:", str(e))
         return jsonify({'status': 'error', 'message': str(e)}), 500
     finally:
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
 
 @app.route("/get_assessment_result", methods=["POST"])
+@jwt_required()
 def get_assessment_result():
     data = request.get_json()
     assessment_id = data.get("assessment_id")
@@ -1195,6 +2415,31 @@ def get_assessment_result():
         return jsonify({"status": "error", "message": "Assessment ID is required"}), 400
 
     conn = get_db_connection(); cur = conn.cursor()
+        # ✅ SECURITY: Check if user can access this assessment
+    cur.execute("""
+        SELECT assessee_id 
+        FROM assessments 
+        WHERE id = %s
+    """, (assessment_id,))
+    row = cur.fetchone()
+    
+    if not row:
+        cur.close()
+        conn.close()
+        return jsonify({"status": "error", "message": "Assessment not found"}), 404
+    
+    assessee_id = row[0]
+    
+    # ✅ Hierarchy check
+    if not can_access_profile(cur, assessee_id):
+        cur.close()
+        conn.close()
+        return jsonify({
+            "status": "error", 
+            "message": "Forbidden: you cannot access this assessment"
+        }), 403
+    
+
     try:
         cur.execute("""
             SELECT a.id, a.assessor_name, a.assessee_name, a.started_at, 
@@ -1310,8 +2555,80 @@ def get_performance_level(score_percentage):
         return "Advanced"
     else:
         return "Inadequate"
+    
+
+@app.route('/reports/person_category_breakdown', methods=['POST'])
+@jwt_required()
+def reports_person_category_breakdown():
+    data = request.get_json() or {}
+    profile_id = data.get('profile_id')
+
+    if not profile_id:
+        return jsonify({'status': 'error', 'message': 'profile_id required'}), 400
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    try:
+        if not can_access_profile(cur, int(profile_id)):
+            return jsonify({
+                'status': 'error',
+                'message': 'Forbidden: you cannot access this profile'
+            }), 403
+
+        cur.execute("""
+            SELECT
+                aco.category_title,
+                COALESCE(ROUND(
+                    SUM(aco.avg_score * aco.answered_questions)
+                    / NULLIF(SUM(aco.answered_questions), 0)
+                ::numeric, 2), 0) AS avg_on3,
+                COALESCE(SUM(aco.right_count), 0) AS right_count,
+                COALESCE(SUM(aco.partial_count), 0) AS partial_count,
+                COALESCE(SUM(aco.wrong_count), 0) AS wrong_count,
+                COALESCE(SUM(aco.answered_questions), 0) AS answered_questions,
+                COALESCE(SUM(aco.total_questions), 0) AS total_questions
+            FROM assessment_category_outcome aco
+            JOIN assessments a ON a.id = aco.assessment_id
+            WHERE a.assessee_id = %s
+              AND a.completed_at IS NOT NULL
+            GROUP BY aco.category_title
+            ORDER BY avg_on3 DESC
+        """, (profile_id,))
+
+        rows = cur.fetchall()
+
+        categories = []
+        for category, avg_on3, right, partial, wrong, answered, total in rows:
+            score_percentage = (float(avg_on3 or 0) / 3.0) * 100
+            categories.append({
+                "category": category,
+                "avg_on3": float(avg_on3 or 0),
+                "score_percentage": round(score_percentage, 1),
+                "performance_level": get_performance_level(score_percentage),
+                "right": int(right or 0),
+                "partial": int(partial or 0),
+                "wrong": int(wrong or 0),
+                "answered": int(answered or 0),
+                "total": int(total or 0)
+            })
+
+        return jsonify({
+            "status": "success",
+            "categories": categories
+        }), 200
+
+    except Exception as e:
+        print("❌ /reports/person_category_breakdown:", e)
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+    finally:
+        cur.close()
+        conn.close()
+
 
 @app.route('/get_profile_details', methods=['POST'])
+@jwt_required()
 def get_profile_details():
     data = request.get_json()
     profile_id = data.get('profile_id')
@@ -1319,6 +2636,14 @@ def get_profile_details():
         return jsonify({'error': 'Missing profile_id'}), 400
 
     conn = get_db_connection(); cur = conn.cursor()
+
+        # ✅ SECURITY: Check if user can access this profile
+    if not can_access_profile(cur, int(profile_id)):
+        cur.close()
+        conn.close()
+        return jsonify({'error': 'Forbidden: you cannot access this profile'}), 403
+    
+
     cur.execute("""
         SELECT full_name, email, phone, role, subrole, position
         FROM profiles WHERE id = %s
@@ -1349,96 +2674,236 @@ def get_profile_details():
     }), 200
 
 # ----------------------------------------
+# ----------------------------------------
+# REPORTS: TEAM OVERVIEW  (used by UI)
+## ----------------------------------------
 # REPORTS: TEAM OVERVIEW  (used by UI)
 # ----------------------------------------
 @app.route('/reports/team_overview', methods=['POST'])
+@jwt_required()
 def reports_team_overview():
+    """
+    Overview report using JWT role/hierarchy rules.
+
+    Admin:
+      - Sees all completed assessments.
+      - Can optionally filter overview by role_scope: ALL, SFP, CC, CE.
+
+    Channel Manager:
+      - Sees same department/role except assessed Channel Managers.
+
+    National Supervisor:
+      - Sees own Supervisors + Sales Experts/field profiles.
+      - Does not see National Supervisors or Channel Managers.
+
+    Supervisor:
+      - Sees own Sales Experts only.
+    """
     body = request.get_json() or {}
     dfrom, dto = _parse_range(body, default_days=30)
-    where, params = _role_filters(body)
 
-    where_sql = "a.completed_at BETWEEN %s AND %s"
-    if where:
-        where_sql += " AND " + where
+    user = current_user_claims()
+    position = user["position"]
+    user_role = (user["role"] or "").strip().upper()
 
-    conn = get_db_connection(); cur = conn.cursor()
+    # New: admin overview scope from Flutter
+    role_scope = (body.get("role_scope") or "ALL").strip().upper()
+
+    print("📊 TEAM OVERVIEW BODY:", body)
+    print("📊 DATE FROM:", dfrom)
+    print("📊 DATE TO:", dto)
+    print("📊 USER:", user)
+    print("📊 ROLE SCOPE:", role_scope)
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
     try:
-        # Totals
+        where_clause = "a.completed_at BETWEEN %s AND %s"
+        params = [dfrom, dto]
+
+        if is_admin_user():
+            print("📊 SCOPE: ADMIN")
+
+            # Admin can choose ALL / SFP / CC / CE in the overview screen
+            if role_scope in ("SFP", "CC", "CE"):
+                where_clause += " AND UPPER(p.role) = %s"
+                params.append(role_scope)
+                print(f"📊 ADMIN FILTERED BY ROLE: {role_scope}")
+            else:
+                print("📊 ADMIN - all completed assessments")
+
+        else:
+            current_profile_id = get_current_profile_id(cur)
+
+            if not current_profile_id:
+                return jsonify({
+                    "status": "error",
+                    "message": "Current user profile not found"
+                }), 403
+
+            print("📊 CURRENT PROFILE ID:", current_profile_id)
+
+            if position == "channel manager":
+                where_clause += """
+                    AND UPPER(p.role) = %s
+                    AND LOWER(p.position) <> 'channel manager'
+                """
+                params.append(user_role)
+                print("📊 SCOPE: CHANNEL MANAGER")
+
+            elif position == "national supervisor":
+                where_clause += """
+                    AND p.national_supervisor_id = %s
+                    AND LOWER(p.position) NOT IN ('national supervisor', 'channel manager')
+                """
+                params.append(current_profile_id)
+                print("📊 SCOPE: NATIONAL SUPERVISOR")
+
+            elif position == "supervisor":
+                where_clause += """
+                    AND p.supervisor_id = %s
+                    AND LOWER(p.position) = 'sales expert'
+                """
+                params.append(current_profile_id)
+                print("📊 SCOPE: SUPERVISOR")
+
+            else:
+                where_clause += " AND 1=0"
+                print("📊 SCOPE: UNKNOWN / BLOCKED")
+
+        print("📊 WHERE CLAUSE:", where_clause)
+        print("📊 PARAMS:", params)
+
+        # ---------------- TOTALS ----------------
         cur.execute(f"""
-            SELECT COUNT(*) AS total_assessments,
-                   COALESCE(ROUND(AVG(a.final_score)::numeric,2),0) AS avg_final_on3
+            SELECT
+                COUNT(*) AS total_assessments,
+                COALESCE(ROUND(AVG(a.final_score)::numeric, 2), 0) AS avg_final_on3
             FROM assessments a
             JOIN profiles p ON p.id = a.assessee_id
-            WHERE {where_sql}
-        """, (dfrom, dto, *params))
+            WHERE {where_clause}
+        """, tuple(params))
+
         total_assessments, avg_final_on3 = cur.fetchone()
 
-        # By role
+        print("📊 TOTAL ASSESSMENTS RETURNED:", total_assessments)
+        print("📊 AVG SCORE RETURNED:", avg_final_on3)
+
+        # ---------------- BY ROLE ----------------
         cur.execute(f"""
-            SELECT p.role, COUNT(*) AS cnt, COALESCE(ROUND(AVG(a.final_score)::numeric,2),0) AS avg_on3
+            SELECT
+                p.role,
+                COUNT(*) AS cnt,
+                COALESCE(ROUND(AVG(a.final_score)::numeric, 2), 0) AS avg_on3
             FROM assessments a
             JOIN profiles p ON p.id = a.assessee_id
-            WHERE {where_sql}
+            WHERE {where_clause}
             GROUP BY p.role
             ORDER BY cnt DESC
-        """, (dfrom, dto, *params))
-        by_role = [{"role": r, "count": int(c), "avg_on3": float(s)} for (r,c,s) in cur.fetchall()]
+        """, tuple(params))
 
-        # By subrole (if role prefiltered) else by position
-        if (body.get('role') or ''):
-            cur.execute(f"""
-                SELECT p.subrole, COUNT(*) AS cnt, COALESCE(ROUND(AVG(a.final_score)::numeric,2),0) AS avg_on3
-                FROM assessments a
-                JOIN profiles p ON p.id = a.assessee_id
-                WHERE {where_sql}
-                GROUP BY p.subrole
-                ORDER BY cnt DESC
-            """, (dfrom, dto, *params))
-            by_secondary = [{"label":"subrole", "name": n, "count": int(c), "avg_on3": float(s)}
-                            for (n,c,s) in cur.fetchall()]
-        else:
-            cur.execute(f"""
-                SELECT p.position, COUNT(*) AS cnt, COALESCE(ROUND(AVG(a.final_score)::numeric,2),0) AS avg_on3
-                FROM assessments a
-                JOIN profiles p ON p.id = a.assessee_id
-                WHERE {where_sql}
-                GROUP BY p.position
-                ORDER BY cnt DESC
-            """, (dfrom, dto, *params))
-            by_secondary = [{"label":"position", "name": n, "count": int(c), "avg_on3": float(s)}
-                            for (n,c,s) in cur.fetchall()]
+        by_role = [
+            {
+                "role": r,
+                "count": int(c),
+                "avg_on3": float(s)
+            }
+            for (r, c, s) in cur.fetchall()
+        ]
 
-        # Trend per day
+        # ---------------- BY SUBROLE / SEGMENT ----------------
         cur.execute(f"""
-            SELECT DATE(a.completed_at) AS d,
-                   COALESCE(ROUND(AVG(a.final_score)::numeric,2),0) AS avg_on3,
-                   COUNT(*) AS cnt
+            SELECT
+                COALESCE(NULLIF(TRIM(p.subrole), ''), 'Unassigned') AS segment,
+                COUNT(*) AS cnt,
+                COALESCE(ROUND(AVG(a.final_score)::numeric, 2), 0) AS avg_on3
             FROM assessments a
             JOIN profiles p ON p.id = a.assessee_id
-            WHERE {where_sql}
+            WHERE {where_clause}
+            GROUP BY COALESCE(NULLIF(TRIM(p.subrole), ''), 'Unassigned')
+            ORDER BY cnt DESC
+        """, tuple(params))
+
+        by_secondary = [
+            {
+                "label": "subrole",
+                "name": n,
+                "count": int(c),
+                "avg_on3": float(s)
+            }
+            for (n, c, s) in cur.fetchall()
+        ]
+
+        # ---------------- TREND PER DAY ----------------
+        cur.execute(f"""
+            SELECT
+                DATE(a.completed_at) AS d,
+                COALESCE(ROUND(AVG(a.final_score)::numeric, 2), 0) AS avg_on3,
+                COUNT(*) AS cnt
+            FROM assessments a
+            JOIN profiles p ON p.id = a.assessee_id
+            WHERE {where_clause}
             GROUP BY DATE(a.completed_at)
             ORDER BY DATE(a.completed_at)
-        """, (dfrom, dto, *params))
-        trend = [{"date": d.strftime("%Y-%m-%d"), "avg_on3": float(s), "count": int(c)} for (d,s,c) in cur.fetchall()]
+        """, tuple(params))
+
+        trend = [
+            {
+                "date": d.strftime("%Y-%m-%d"),
+                "avg_on3": float(s),
+                "count": int(c)
+            }
+            for (d, s, c) in cur.fetchall()
+        ]
+
+        print("📊 BY ROLE:", by_role)
+        print("📊 BY SECONDARY:", by_secondary)
+        print("📊 TREND POINTS:", trend)
 
         return jsonify({
-            "status":"success",
-            "window":{"from": dfrom.isoformat(), "to": dto.isoformat()},
-            "totals":{"assessments": int(total_assessments or 0), "avg_on3": float(avg_final_on3 or 0)},
+            "status": "success",
+            "window": {
+                "from": dfrom.isoformat(),
+                "to": dto.isoformat()
+            },
+            "scope": {
+                "role_scope": role_scope if is_admin_user() else user_role,
+                "position": position,
+                "user_role": user_role
+            },
+            "totals": {
+                "assessments": int(total_assessments or 0),
+                "avg_on3": float(avg_final_on3 or 0)
+            },
             "by_role": by_role,
             "by_secondary": by_secondary,
-            "trend": trend
+            "trend": trend,
+            "debug": {
+                "position": position,
+                "user_role": user_role,
+                "role_scope": role_scope,
+                "where_clause": where_clause,
+                "params": [str(p) for p in params]
+            }
         }), 200
+
     except Exception as e:
         print("❌ /reports/team_overview:", e)
-        return jsonify({"status":"error","message":str(e)}), 500
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
     finally:
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
 
 # ----------------------------------------
 # REPORTS: INDIVIDUAL OVERVIEW  (used by UI)
 # ----------------------------------------
 @app.route('/reports/individual_overview', methods=['POST'])
+@jwt_required()
 def reports_individual_overview():
     """
     Body: { "member_id": <profiles.id>, "date_from": "...", "date_to": "..." }
@@ -1452,6 +2917,17 @@ def reports_individual_overview():
     dfrom, dto = _parse_range(body, default_days=365)
 
     conn = get_db_connection(); cur = conn.cursor()
+
+        # ✅ SECURITY: Check if user can access this employee's report
+    if not can_access_profile(cur, int(member_id)):
+        cur.close()
+        conn.close()
+        return jsonify({
+            "status": "error",
+            "message": "Forbidden: you cannot access this employee report"
+        }), 403
+    
+
     try:
         # Header
         cur.execute("SELECT id, full_name, role, subrole, position FROM profiles WHERE id = %s", (member_id,))
@@ -1533,6 +3009,7 @@ def reports_individual_overview():
 # REPORTS: INDIVIDUAL PER-CATEGORY SERIES  (used by UI)
 # ----------------------------------------
 @app.route('/reports/individual_category_series', methods=['POST'])
+@jwt_required()
 def reports_individual_category_series():
     """
     Body: { "member_id": <profiles.id>, "category_title": "..." }
@@ -1545,6 +3022,17 @@ def reports_individual_category_series():
         return jsonify({"status":"error","message":"member_id and category_title required"}), 400
 
     conn = get_db_connection(); cur = conn.cursor()
+
+        # ✅ SECURITY: Check if user can access this employee's report
+    if not can_access_profile(cur, int(member_id)):
+        cur.close()
+        conn.close()
+        return jsonify({
+            "status": "error",
+            "message": "Forbidden: you cannot access this employee report"
+        }), 403
+    
+
     try:
         cur.execute("""
             SELECT attempt_seq,
@@ -1571,6 +3059,7 @@ from flask import jsonify, request
 import traceback
 
 @app.route('/profile_get', methods=['GET'])
+@jwt_required()
 def profile_get():
     """
     GET /profile_get?id=160
@@ -1586,6 +3075,13 @@ def profile_get():
         return jsonify({'error': 'invalid id'}), 400
 
     conn = get_db_connection(); cur = conn.cursor()
+
+    if not can_access_profile(cur, pid):
+        cur.close()
+        conn.close()
+        return jsonify({'error': 'Forbidden: you cannot access this profile'}), 403
+    
+
     try:
         # discover what columns exist (current schema)
         cur.execute("""
@@ -1671,6 +3167,7 @@ def profile_get():
 
 # ----------------------- UPDATE PROFILE (diff-based) -----------------------
 @app.route('/profile_update', methods=['PUT'])
+@jwt_required()
 def profile_update():
     """
     PUT /profile_update
@@ -1702,6 +3199,13 @@ def profile_update():
     allowed_positions = {'channel manager','national supervisor','supervisor','sales expert'}
 
     conn = get_db_connection(); cur = conn.cursor()
+
+    if not can_access_profile(cur, pid):
+        cur.close()
+        conn.close()
+        return jsonify({'error': 'Forbidden: you cannot update this profile'}), 403
+    
+
     try:
         # discover columns present now
         cur.execute("""

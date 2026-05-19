@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
+import 'api_helper.dart'; 
 
 class ProfileDetailScreen extends StatefulWidget {
   final int profileId;
@@ -50,7 +50,6 @@ class _ProfileDetailScreenState extends State<ProfileDetailScreen>
   late final AnimationController _anim;
   late final Animation<double> _fade;
 
-  static const String _endpoint = 'http://localhost:5000/get_profile_details';
 
   String getPerformanceLevel(double? gpa) {
     if (gpa == null) return 'N/A';
@@ -70,43 +69,62 @@ class _ProfileDetailScreenState extends State<ProfileDetailScreen>
 
   Color _gpaColor(double? gpa) => perfColor(getPerformanceLevel(gpa));
 
-  Future<void> _fetch() async {
-    try {
-      final resp = await http.post(
-        Uri.parse(_endpoint),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'profile_id': widget.profileId}),
-      );
-      if (!mounted) return;
+Future<void> _fetch() async {
+  try {
+    final resp = await ApiHelper.post('/get_profile_details', {
+      'profile_id': widget.profileId,
+    });
 
-      if (resp.statusCode == 200) {
-        final data = jsonDecode(resp.body);
-        setState(() {
-          allTimeGpa = data['all_time_gpa'] == null ? null : double.tryParse('${data['all_time_gpa']}');
-          last3Gpa   = data['last_3_gpa']   == null ? null : double.tryParse('${data['last_3_gpa']}');
+    if (!mounted) return;
 
-          final cb = data['category_breakdown'];
-          categoryBreakdown = (cb is List)
-              ? cb.map((e) => Map<String, dynamic>.from(e as Map)).toList().cast<Map<String, dynamic>>()
-              : <Map<String, dynamic>>[];
+    if (resp.statusCode == 401) {
+      await ApiHelper.clearToken();
 
-          hierarchy = (data['hierarchy'] is Map)
-              ? Map<String, dynamic>.from(data['hierarchy'])
-              : null;
-
-          isLoading = false;
-        });
-        _anim.forward();
-      } else {
-        setState(() => isLoading = false);
-        _toast('Couldn’t load fresh data (placeholders shown)', isWarn: true);
-      }
-    } catch (_) {
-      if (!mounted) return;
       setState(() => isLoading = false);
-      _toast('Offline / server unavailable (placeholders shown)', isWarn: true);
+
+      _toast('Session expired. Please log in again.', isWarn: true);
+      return;
     }
+
+    if (resp.statusCode == 200) {
+      final data = jsonDecode(resp.body);
+
+      setState(() {
+        allTimeGpa = data['all_time_gpa'] == null
+            ? null
+            : double.tryParse('${data['all_time_gpa']}');
+
+        last3Gpa = data['last_3_gpa'] == null
+            ? null
+            : double.tryParse('${data['last_3_gpa']}');
+
+        final cb = data['category_breakdown'];
+        categoryBreakdown = (cb is List)
+            ? cb
+                .map((e) => Map<String, dynamic>.from(e as Map))
+                .toList()
+                .cast<Map<String, dynamic>>()
+            : <Map<String, dynamic>>[];
+
+        hierarchy = (data['hierarchy'] is Map)
+            ? Map<String, dynamic>.from(data['hierarchy'])
+            : null;
+
+        isLoading = false;
+      });
+
+      _anim.forward();
+    } else {
+      setState(() => isLoading = false);
+      _toast('Couldn’t load fresh data (HTTP ${resp.statusCode})', isWarn: true);
+    }
+  } catch (e) {
+    if (!mounted) return;
+
+    setState(() => isLoading = false);
+    _toast('Offline / server unavailable: $e', isWarn: true);
   }
+}
 
   void _toast(String msg, {bool isWarn = false}) {
     final bg = isWarn ? Colors.orange[700] : Colors.teal[600];

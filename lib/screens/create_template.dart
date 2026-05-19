@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'api_helper.dart';
 import 'dart:convert';
 
 class CreateTemplateScreen extends StatefulWidget {
@@ -93,13 +93,54 @@ class _CreateTemplateScreenState extends State<CreateTemplateScreen> with Ticker
     super.dispose();
   }
 
-  // ORIGINAL BACKEND FUNCTIONALITY - PRESERVED
-  Future<void> submitTemplate(Map<String, dynamic> templateData) async {
-    final response = await http.post(
-      Uri.parse('http://localhost:5000/create_template'),
-      headers: {'Content-Type': 'application/json'},
-      body: json.encode(templateData),
+Future<void> submitTemplate(Map<String, dynamic> templateData) async {
+  try {
+    final response = await ApiHelper.post(
+      '/create_template',
+      templateData,
     );
+
+    if (!mounted) return;
+
+    if (response.statusCode == 401) {
+      await ApiHelper.clearToken();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Icon(
+                  Icons.lock_outline,
+                  color: Colors.white,
+                  size: 20,
+                ),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  'Session expired. Please log in again.',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: const Color(0xFFEF4444),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
+      );
+
+      Navigator.pop(context);
+      return;
+    }
 
     if (response.statusCode == 200 || response.statusCode == 201) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -112,17 +153,27 @@ class _CreateTemplateScreenState extends State<CreateTemplateScreen> with Ticker
                   color: Colors.white.withOpacity(0.2),
                   borderRadius: BorderRadius.circular(6),
                 ),
-                child: const Icon(Icons.check_circle, color: Colors.white, size: 20),
+                child: const Icon(
+                  Icons.check_circle,
+                  color: Colors.white,
+                  size: 20,
+                ),
               ),
               const SizedBox(width: 12),
-              const Text('Template created successfully!', style: TextStyle(fontWeight: FontWeight.w600)),
+              const Text(
+                'Template created successfully!',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
             ],
           ),
           backgroundColor: const Color(0xFF10B981),
           behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
         ),
       );
+
       Navigator.pop(context);
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -135,19 +186,66 @@ class _CreateTemplateScreenState extends State<CreateTemplateScreen> with Ticker
                   color: Colors.white.withOpacity(0.2),
                   borderRadius: BorderRadius.circular(6),
                 ),
-                child: const Icon(Icons.error, color: Colors.white, size: 20),
+                child: const Icon(
+                  Icons.error,
+                  color: Colors.white,
+                  size: 20,
+                ),
               ),
               const SizedBox(width: 12),
-              Expanded(child: Text('Error: ${response.body}', style: const TextStyle(fontWeight: FontWeight.w600))),
+              Expanded(
+                child: Text(
+                  'Error: ${response.body}',
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
             ],
           ),
           backgroundColor: const Color(0xFFEF4444),
           behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
         ),
       );
     }
+  } catch (e) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: const Icon(
+                Icons.wifi_off,
+                color: Colors.white,
+                size: 20,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Connection error: $e',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: const Color(0xFFEF4444),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+      ),
+    );
   }
+}
 
   Widget _buildModernDropdown(String label, String? value, List<String> options, ValueChanged<String?> onChanged, List<Color> colors) {
     return Column(

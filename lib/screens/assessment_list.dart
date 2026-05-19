@@ -1,13 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui'; // For BackdropFilter
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-
+import 'api_helper.dart';
 import 'create_template.dart';
 import 'home.dart';
 import 'assessment_category.dart';
 import 'Profiles.dart';
 import 'initiateassessment.dart';
+import 'ReportsScreen.dart'; // ADDED FOR NAVIGATION
 
 class AssessmentListScreen extends StatefulWidget {
   final String role;
@@ -43,8 +44,7 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
   List<Map<String, dynamic>> templates = [];
   List<Map<String, dynamic>> assessmentHistory = [];
 
-  // --------- NEW: cache dialog results so we don’t refetch unnecessarily ----------
-  final Map<dynamic, Map<String, dynamic>> _resultCache = {}; // <-- ADDED
+  final Map<dynamic, Map<String, dynamic>> _resultCache = {};
 
   // UI state
   bool _isSidebarVisible = false;
@@ -63,7 +63,7 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
   // Debounce
   Timer? _searchDebounce;
 
-  // Minor gradient animations (kept, but only applied to small widgets)
+  // Gradient animations
   late AnimationController _gradientController;
   late Animation<double> _gradientAnimation;
   final List<List<Color>> gradientSets = const [
@@ -71,7 +71,7 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
     Color(0xFF0f172a), Color(0xFF1e293b), Color(0xFF334155),
     Color(0xFF1a202c), Color(0xFF2d3748), Color(0xFF4a5568),
     Color(0xFF2563eb), Color(0xFF3b82f6), Color(0xFF60a5fa),
-  ].slices(3); // helper extension below
+  ].slices(3);
 
   int currentGradientIndex = 0;
   int nextGradientIndex = 1;
@@ -80,9 +80,8 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
   void initState() {
     super.initState();
     _initAnimations();
-    // Initial fetches only once here:
     fetchTemplates();
-    fetchAssessmentHistory(); // now hydrates rows with real scores
+    fetchAssessmentHistory();
   }
 
   void _initAnimations() {
@@ -112,87 +111,122 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
     super.dispose();
   }
 
-  // ---------------- Fetchers (guarded + memoized) ----------------
+Future<void> fetchTemplates() async {
+  final key =
+      '${widget.selectedCategory}|${widget.selectedSubCategory}|${widget.position}|${widget.role}';
 
-  Future<void> fetchTemplates() async {
-    final key =
-        '${widget.selectedCategory}|${widget.selectedSubCategory}|${widget.position}|${widget.role}';
-    if (_cachedTemplateKey == key && templates.isNotEmpty) return;
-    if (_loadingTemplates) return;
-    _loadingTemplates = true;
+  if (_cachedTemplateKey == key && templates.isNotEmpty) return;
+  if (_loadingTemplates) return;
 
-    try {
-      final resp = await http.post(
-        Uri.parse('http://localhost:5000/get_templates'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'role': widget.selectedCategory.toString().toUpperCase(),
-          'subrole': widget.selectedSubCategory?.toString().toUpperCase(),
-        }),
-      );
-      if (!mounted) return;
-      if (resp.statusCode == 200) {
-        final data = jsonDecode(resp.body);
-        final List<Map<String, dynamic>> all =
-            List<Map<String, dynamic>>.from(data['templates'] ?? []);
-        final filtered = _applyEnhancedFiltering(all);
-        setState(() {
-          templates = filtered;
-          _cachedTemplateKey = key;
-        });
-      }
-    } catch (_) {
-      // ignore
-    } finally {
-      _loadingTemplates = false;
+  _loadingTemplates = true;
+
+  try {
+    final resp = await ApiHelper.post('/get_templates', {
+      'role': widget.selectedCategory.toString().toUpperCase(),
+      'subrole': widget.selectedSubCategory?.toString().toUpperCase(),
+      'username': widget.username,
+      'position': widget.position,
+    });
+
+    if (!mounted) return;
+
+    if (resp.statusCode == 200) {
+      final data = jsonDecode(resp.body);
+
+      final List<Map<String, dynamic>> all =
+          List<Map<String, dynamic>>.from(data['templates'] ?? []);
+
+      final filtered = _applyEnhancedFiltering(all);
+
+      setState(() {
+        templates = filtered;
+        _cachedTemplateKey = key;
+      });
+    } else if (resp.statusCode == 401) {
+      await _handleUnauthorized();
+    } else {
+      setState(() => templates = []);
     }
+  } catch (e) {
+    debugPrint('Error fetching templates: $e');
+
+    if (!mounted) return;
+    setState(() => templates = []);
+  } finally {
+    _loadingTemplates = false;
   }
+}
 
-  // -------------------- CHANGED: hydrates rows with real score --------------------
-  Future<void> fetchAssessmentHistory() async {
-    final key =
-        '${widget.selectedCategory}|${widget.selectedSubCategory}|${widget.position}|${widget.role}';
-    if (_cachedHistoryKey == key && assessmentHistory.isNotEmpty) return;
-    if (_loadingHistory) return;
-    _loadingHistory = true;
 
-    try {
-      final resp = await http.post(
-        Uri.parse('http://localhost:5000/get_assessment_history'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({}),
-      );
-      if (!mounted) return;
+Future<void> fetchAssessmentHistory() async {
+  final key =
+      '${widget.selectedCategory}|${widget.selectedSubCategory}|${widget.position}|${widget.role}';
 
-      if (resp.statusCode == 200) {
-        final data = jsonDecode(resp.body);
-        if (data['status'] == 'success') {
-          final List<Map<String, dynamic>> all =
-              List<Map<String, dynamic>>.from(data['history'] ?? []);
-          final filtered = _applyHistoryFiltering(all);
+  if (_cachedHistoryKey == key && assessmentHistory.isNotEmpty) return;
+  if (_loadingHistory) return;
 
-          // NEW: hydrate each item with real stats from /get_assessment_result
-          final hydrated = await _hydrateHistoryWithResults(filtered);
+  _loadingHistory = true;
 
-          setState(() {
-            assessmentHistory = hydrated;
-            _cachedHistoryKey = key;
-          });
-        } else {
-          setState(() => assessmentHistory = []);
-        }
+  try {
+    final resp = await ApiHelper.post('/get_assessment_history', {
+      'username': widget.username,
+      'position': widget.position,
+      'role': widget.role,
+    });
+
+    if (!mounted) return;
+
+    if (resp.statusCode == 200) {
+      final data = jsonDecode(resp.body);
+
+      if (data['status'] == 'success') {
+        final List<Map<String, dynamic>> all =
+            List<Map<String, dynamic>>.from(data['history'] ?? []);
+
+        final filtered = _applyHistoryFiltering(all);
+        final hydrated = await _hydrateHistoryWithResults(filtered);
+
+        setState(() {
+          assessmentHistory = hydrated;
+          _cachedHistoryKey = key;
+        });
       } else {
         setState(() => assessmentHistory = []);
       }
-    } catch (_) {
-      if (!mounted) return;
+    } else if (resp.statusCode == 401) {
+      await _handleUnauthorized();
+    } else {
       setState(() => assessmentHistory = []);
-    } finally {
-      _loadingHistory = false;
     }
-  }
+  } catch (e) {
+    debugPrint('Error fetching assessment history: $e');
 
-  // ---------------- NEW: call /get_assessment_result per item (cached) ----------------
+    if (!mounted) return;
+    setState(() => assessmentHistory = []);
+  } finally {
+    _loadingHistory = false;
+  }
+}
+
+Future<void> _handleUnauthorized() async {
+  await ApiHelper.clearToken();
+
+  if (!mounted) return;
+
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(
+      content: Text('Session expired. Please log in again.'),
+    ),
+  );
+
+  setState(() {
+    templates = [];
+    assessmentHistory = [];
+    _cachedTemplateKey = null;
+    _cachedHistoryKey = null;
+  });
+}
+
   Future<List<Map<String, dynamic>>> _hydrateHistoryWithResults(
     List<Map<String, dynamic>> items,
   ) async {
@@ -204,11 +238,9 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
 
       if (result == null) {
         try {
-          final r = await http.post(
-            Uri.parse('http://localhost:5000/get_assessment_result'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'assessment_id': id}),
-          );
+      final r = await ApiHelper.post('/get_assessment_result', {
+        'assessment_id': id,
+      });
           if (r.statusCode == 200) {
             final parsed = jsonDecode(r.body);
             if (parsed['status'] == 'success') {
@@ -227,15 +259,15 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
       final double totalScore = (stats['total_score'] ?? 0.0).toDouble();
       final double maxPossible = (stats['max_possible_score'] ?? 0.0).toDouble();
       final double pct = maxPossible > 0 ? (totalScore / maxPossible * 100.0) : 0.0;
-      final double scoreOn3 = (pct / 100.0) * 3.0; // keep your UI scale (x/3)
+      final double scoreOn3 = (pct / 100.0) * 3.0;
 
       final dynamic completedAt = result['completed_at'] ?? item['completed_at'];
 
       return {
         ...item,
-        'final_score': scoreOn3,         // used by _fmtScore and _fmtOn3
-        'score_percentage': pct,         // optional
-        'completed_at': completedAt,     // date coming from result if present
+        'final_score': scoreOn3,
+        'score_percentage': pct,
+        'completed_at': completedAt,
       };
     }).toList();
 
@@ -244,7 +276,6 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
 
   // ---------------- Filters & Helpers ----------------
 
-  // History filter (by your rules)
   List<Map<String, dynamic>> _applyHistoryFiltering(
       List<Map<String, dynamic>> allHistory) {
     final category = widget.selectedCategory.toString().toUpperCase();
@@ -252,14 +283,12 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
         widget.selectedSubCategory?.toString().toLowerCase().trim();
     final position = widget.position.toLowerCase();
     final role = widget.role.toUpperCase();
-    final isAdmin = position == 'all';
+    final isAdmin = position.toLowerCase() == 'all';
 
     List<Map<String, dynamic>> filtered = allHistory.where((history) {
-      final templateRole =
-          (history['template_role'] ?? history['assessee_role'] ?? '')
-              .toString()
-              .toUpperCase();
-      return templateRole == category;
+      final assesseeRole =
+          (history['assessee_role'] ?? '').toString().toUpperCase();
+      return assesseeRole == category;
     }).toList();
 
     if ((category != 'CC' && category != 'CE') &&
@@ -272,21 +301,14 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
       }).toList();
     }
 
-    if (isAdmin) return filtered;
-
-    // CC/CE special
-    if (category == 'CC' || category == 'CE') {
-      if (role == category) {
-        return filtered.where((h) {
-          final templatePosition =
-              (h['template_position'] ?? '').toString().toLowerCase();
-          return templatePosition == position;
-        }).toList();
-      }
-      return [];
+    if (isAdmin) {
+      return filtered;
     }
 
-    // SFP hierarchy
+    if (category == 'CC' || category == 'CE') {
+      return filtered;
+    }
+
     filtered = filtered.where((h) {
       final pos = (h['assessee_position'] ?? '').toString().toLowerCase();
       if (position == 'channel manager') {
@@ -304,7 +326,6 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
     return filtered;
   }
 
-  // Templates filter
   List<Map<String, dynamic>> _applyEnhancedFiltering(
       List<Map<String, dynamic>> allTemplates) {
     final category = widget.selectedCategory.toString().toUpperCase();
@@ -314,11 +335,9 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
     final userRole = widget.role.toUpperCase();
     final isAdmin = position == 'all';
 
-    // 1) Category filter (role)
     List<Map<String, dynamic>> catFiltered =
         allTemplates.where((t) => (t['role'] ?? '').toString().toUpperCase() == category).toList();
 
-    // 2) Subrole
     if (subcategory != null && subcategory.isNotEmpty) {
       catFiltered = catFiltered.where((t) {
         final s = (t['subrole'] ?? '').toString().toLowerCase().trim();
@@ -326,10 +345,8 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
       }).toList();
     }
 
-    // 3) Admin sees all after that
     if (isAdmin) return catFiltered;
 
-    // 4) CE/CC specific
     if (category == 'CE') {
       if (subcategory == 'supervisor') {
         return catFiltered
@@ -346,11 +363,9 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
       }
     }
     if (category == 'CC') {
-      // Keep same visibility behavior as your original
       return catFiltered;
     }
 
-    // 5) SFP hierarchy by position
     if (position == 'channel manager') {
       return catFiltered
           .where((t) => (t['position'] ?? '').toString().toLowerCase() != 'all')
@@ -370,11 +385,9 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
     return [];
   }
 
-  // Combined filter/sort for list rendering
   List<Map<String, dynamic>> _getFilteredAndSortedData() {
     final current = _showTemplates ? templates : assessmentHistory;
 
-    // Search (debounced in setter below)
     final filtered = current.where((item) {
       final q = searchQuery.toLowerCase();
       return (item['name'] ?? '').toString().toLowerCase().contains(q) ||
@@ -396,7 +409,6 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
               .toLowerCase()
               .contains(q);
     }).where((item) {
-      // Position filter
       if (_selectedPositionFilter == 'All') return true;
       final filterPosition = _selectedPositionFilter.toLowerCase().trim();
       final role =
@@ -422,13 +434,11 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
         }
         return pos.contains(filterPosition);
       } else if (role == 'CE' || role == 'CC') {
-        // For CE & CC treat subrole as position
         return subrole == filterPosition || pos == filterPosition;
       }
       return true;
     }).toList();
 
-    // Sort
     filtered.sort((a, b) {
       dynamic aVal, bVal;
       switch (_sortBy) {
@@ -478,8 +488,6 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
           subrole: widget.subrole,
           username: widget.username,
           position: widget.position,
-         
-        
           nationalSupervisorId: widget.nationalSupervisorId,
           supervisorId: widget.supervisorId,
         ),
@@ -496,7 +504,6 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
           subrole: widget.subrole,
           username: widget.username,
           position: widget.position,
-         
           nationalSupervisorId: widget.nationalSupervisorId,
           supervisorId: widget.supervisorId,
         ),
@@ -513,7 +520,6 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
           subrole: widget.subrole,
           username: widget.username,
           position: widget.position,
-          
           nationalSupervisorId: widget.nationalSupervisorId,
           supervisorId: widget.supervisorId,
         ),
@@ -522,8 +528,16 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
   }
 
   void navigateToReports() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Reports page not implemented yet")),
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ReportsScreen(
+          role: widget.role,
+          username: widget.username,
+          subrole: widget.subrole,
+          position: widget.position,
+        ),
+      ),
     );
   }
 
@@ -606,7 +620,6 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
   Widget build(BuildContext context) {
     final filteredData = _getFilteredAndSortedData();
 
-    // Resolve animated gradient colors once here for small accents
     final colors = _lerp3(
       gradientSets[currentGradientIndex],
       gradientSets[nextGradientIndex],
@@ -616,9 +629,23 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
     final bool isAdmin = widget.position.toLowerCase() == 'all';
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
       body: Stack(
         children: [
+          // Subtle gradient background (PMI blue to white)
+          Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  Color(0xFFEFF6FF), // Very light PMI blue
+                  Color(0xFFF8FAFC), // Almost white
+                  Color(0xFFFFFFFF), // Pure white
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+            ),
+          ),
+
           // Main area
           Padding(
             padding: EdgeInsets.only(
@@ -633,7 +660,6 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
                 // Top bar
                 Row(
                   children: [
-                    // Small animated gradient button ONLY
                     _AnimatedChipButton(
                       colors: colors,
                       icon: _isSidebarVisible ? Icons.close : Icons.menu,
@@ -656,7 +682,7 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
                       onTap: () async {
                         await Future.wait([
                           fetchTemplates(),
-                          fetchAssessmentHistory(), // rehydrates
+                          fetchAssessmentHistory(),
                         ]);
                         if (!mounted) return;
                         ScaffoldMessenger.of(context).showSnackBar(
@@ -693,7 +719,6 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
                         style: TextStyle(fontSize: 14, color: Colors.grey[600]),
                       ),
                     ]),
-                    // ADMIN-ONLY create button (was visible for everyone)
                     if (_showTemplates && isAdmin)
                       _AnimatedFilledButton(
                         colors: colors,
@@ -708,7 +733,6 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
                                 subrole: widget.subrole,
                                 username: widget.username,
                                 position: widget.position,
-                                
                                 nationalSupervisorId: widget.nationalSupervisorId,
                                 supervisorId: widget.supervisorId,
                               ),
@@ -721,7 +745,7 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
 
                 const SizedBox(height: 20),
 
-                // Toggle templates/history (no network here)
+                // Toggle templates/history
                 Container(
                   decoration: BoxDecoration(
                     color: Colors.white, borderRadius: BorderRadius.circular(12),
@@ -782,7 +806,6 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
                 // Search + Filters
                 Row(
                   children: [
-                    // Debounced search
                     Expanded(
                       flex: 3,
                       child: Container(
@@ -863,11 +886,13 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
             ),
           ),
 
-          // Sidebar (NOT wrapped in AnimatedBuilder for the whole screen)
+          // Glassmorphic Sidebar
           if (_isSidebarVisible)
             Positioned(
               left: 0, top: 0, bottom: 0,
-              child: _Sidebar(colors: colors, widget: widget,
+              child: _Sidebar(
+                colors: colors, 
+                widget: widget,
                 onDashboard: navigateToDashboard,
                 onAssessments: navigateToAssessment,
                 onProfiles: navigateToProfiles,
@@ -1044,12 +1069,9 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
                           child: IconButton(
                             onPressed: () async {
                               if (_showTemplates) {
-                                // Load template to initiate
-                                final response = await http.post(
-                                  Uri.parse('http://localhost:5000/get_assessment_initiate'),
-                                  headers: {'Content-Type': 'application/json'},
-                                  body: jsonEncode({'template_name': item['name']}),
-                                );
+                              final response = await ApiHelper.post('/get_assessment_initiate', {
+                                'template_name': item['name'],
+                              });
                                 if (!mounted) return;
                                 if (response.statusCode == 200) {
                                   final fullTemplate = jsonDecode(response.body)['template'];
@@ -1063,7 +1085,6 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
                                         role: widget.role,
                                         subrole: widget.subrole,
                                         position: widget.position,
-                                        
                                         nationalSupervisorId: widget.nationalSupervisorId,
                                         supervisorId: widget.supervisorId,
                                       ),
@@ -1076,7 +1097,6 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
                                   );
                                 }
                               } else {
-                                // History -> open results dialog (and cache)
                                 await _openResultDialog(item['id'], colors);
                               }
                             },
@@ -1149,7 +1169,6 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
     );
   }
 
-  // --------- MODERN DELETE DIALOG ----------
   Future<void> _confirmDelete(String name) async {
     final yes = await showDialog<bool>(
       context: context,
@@ -1183,7 +1202,7 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  '“$name” will be permanently removed. This action cannot be undone.',
+                  '"$name" will be permanently removed. This action cannot be undone.',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.grey[700]),
                 ),
@@ -1239,32 +1258,46 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
     if (yes == true) await deleteTemplateByName(name);
   }
 
-  Future<void> deleteTemplateByName(String name) async {
-    final resp = await http.post(
-      Uri.parse('http://localhost:5000/delete_template'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'name': name}),
-    );
-    if (!mounted) return;
-    if (resp.statusCode == 200) {
-      final result = jsonDecode(resp.body);
-      if (result['status'] == 'success') {
-        setState(() => templates.removeWhere((t) => t['name'] == name));
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Template deleted')));
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: ${result['message']}')));
-      }
+Future<void> deleteTemplateByName(String name) async {
+  final resp = await ApiHelper.post('/delete_template', {
+    'name': name,
+  });
+
+  if (!mounted) return;
+
+  if (resp.statusCode == 200) {
+    final result = jsonDecode(resp.body);
+
+    if (result['status'] == 'success') {
+      setState(() => templates.removeWhere((t) => t['name'] == name));
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Template deleted')),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: ${result['message']}')),
+      );
     }
+  } else if (resp.statusCode == 401) {
+    await _handleUnauthorized();
+  } else {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Failed to delete template')),
+    );
   }
+}
 
   Future<void> _openResultDialog(dynamic assessmentId, List<Color> colors) async {
-    final response = await http.post(
-      Uri.parse('http://localhost:5000/get_assessment_result'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'assessment_id': assessmentId}),
-    );
+final response = await ApiHelper.post('/get_assessment_result', {
+  'assessment_id': assessmentId,
+});
 
     if (!mounted) return;
+    if (response.statusCode == 401) {
+  await _handleUnauthorized();
+  return;
+}
     if (response.statusCode != 200) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Failed to load results")));
       return;
@@ -1278,7 +1311,6 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
 
     final assessment = data['assessment'];
 
-    // NEW: keep cache/state in sync if dialog fetched newer data
     _resultCache[assessmentId] = Map<String, dynamic>.from(assessment);
     final stats = Map<String, dynamic>.from(assessment['statistics'] ?? {});
     final double totalScore = (stats['total_score'] ?? 0.0).toDouble();
@@ -1287,7 +1319,6 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
     final double scoreOn3 = (pct / 100.0) * 3.0;
     final dynamic completedAt = assessment['completed_at'];
 
-    // Patch row in list immediately (nice touch)
     setState(() {
       final idx = assessmentHistory.indexWhere((h) => h['id'] == assessmentId);
       if (idx != -1) {
@@ -1425,7 +1456,7 @@ class _AssessmentListScreenState extends State<AssessmentListScreen>
   }
 }
 
-// ---------- Small animated UI helpers (not wrapping the whole page) ----------
+// ---------- Small animated UI helpers ----------
 
 class _AnimatedChipButton extends StatelessWidget {
   final List<Color> colors;
@@ -1486,6 +1517,7 @@ class _AnimatedFilledButton extends StatelessWidget {
   }
 }
 
+// UPDATED GLASSMORPHIC SIDEBAR (MATCHING HOME.DART)
 class _Sidebar extends StatelessWidget {
   final List<Color> colors;
   final AssessmentListScreen widget;
@@ -1505,50 +1537,118 @@ class _Sidebar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: 280,
-      height: MediaQuery.of(context).size.height,
-      decoration: BoxDecoration(
-        gradient: LinearGradient(colors: colors, begin: Alignment.topLeft, end: Alignment.bottomRight),
-        boxShadow: [
-          BoxShadow(color: colors.first.withOpacity(0.3), blurRadius: 20, spreadRadius: 5, offset: const Offset(5, 0)),
-        ],
-      ),
-      child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 20),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: Colors.white.withOpacity(0.2)),
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: Image.asset('assets/logo.png', width: 90),
+    return ClipRRect(
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+        child: Container(
+          width: 280,
+          height: MediaQuery.of(context).size.height,
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                colors[0].withOpacity(0.85),
+                colors[1].withOpacity(0.75),
+                colors[2].withOpacity(0.65),
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            border: Border(
+              right: BorderSide(
+                color: Colors.white.withOpacity(0.2),
+                width: 1,
               ),
             ),
-            const SizedBox(height: 24),
-            const Text('PHILIP MORRIS',
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 16, letterSpacing: 2.2)),
-            const SizedBox(height: 4),
-            Text('INTERNATIONAL',
-                style: TextStyle(color: Colors.white.withOpacity(0.85), fontSize: 12, letterSpacing: 1.8)),
-            const SizedBox(height: 36),
+            boxShadow: [
+              BoxShadow(
+                color: colors[0].withOpacity(0.3),
+                blurRadius: 30,
+                spreadRadius: 5,
+                offset: const Offset(5, 0),
+              ),
+            ],
+          ),
+          child: SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 30, horizontal: 20),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                // Bigger Logo Container (110px)
+                Container(
+                  padding: const EdgeInsets.all(24),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(color: Colors.white.withOpacity(0.3), width: 2),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 20,
+                        offset: const Offset(0, 10),
+                      ),
+                    ],
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(16),
+                    child: Image.asset('assets/logo.png', width: 110), // Bigger logo
+                  ),
+                ),
+                
+                const SizedBox(height: 32),
+                
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ShaderMask(
+                      shaderCallback: (bounds) => LinearGradient(
+                        colors: [Colors.white, Colors.white.withOpacity(0.95)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ).createShader(bounds),
+                      child: const Text(
+                        'PHILIP MORRIS',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 17,
+                          letterSpacing: 2.5,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    ShaderMask(
+                      shaderCallback: (bounds) => LinearGradient(
+                        colors: [Colors.white.withOpacity(0.9), Colors.white.withOpacity(0.7)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ).createShader(bounds),
+                      child: const Text(
+                        'INTERNATIONAL',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w400,
+                          fontSize: 13,
+                          letterSpacing: 2.0,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                
+                const SizedBox(height: 40),
 
-            GestureDetector(onTap: onDashboard, child: _navItem(Icons.dashboard_outlined, 'Dashboard', false)),
-            const SizedBox(height: 16),
-            GestureDetector(onTap: onAssessments, child: _navItem(Icons.assessment_outlined, 'Assessments', true)),
-            const SizedBox(height: 16),
-            GestureDetector(onTap: onProfiles, child: _navItem(Icons.people_outlined, 'Profiles', false)),
-            const SizedBox(height: 16),
-            GestureDetector(onTap: onReports, child: _navItem(Icons.analytics_outlined, 'Reports', false)),
+                GestureDetector(onTap: onDashboard, child: _navItem(Icons.dashboard_outlined, 'Dashboard', false)),
+                const SizedBox(height: 16),
+                GestureDetector(onTap: onAssessments, child: _navItem(Icons.assessment_outlined, 'Assessments', true)),
+                const SizedBox(height: 16),
+                GestureDetector(onTap: onProfiles, child: _navItem(Icons.people_outlined, 'Profiles', false)),
+                const SizedBox(height: 16),
+                GestureDetector(onTap: onReports, child: _navItem(Icons.analytics_outlined, 'Reports', false)),
 
-            const Spacer(),
-            _userInfo(widget.username, widget.role),
-          ]),
+                const Spacer(),
+                _userInfo(widget.username, widget.role),
+              ]),
+            ),
+          ),
         ),
       ),
     );
@@ -1559,17 +1659,17 @@ class _Sidebar extends StatelessWidget {
       duration: const Duration(milliseconds: 200),
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
       decoration: BoxDecoration(
-        color: active ? Colors.white.withOpacity(0.15) : Colors.transparent,
+        color: active ? Colors.white.withOpacity(0.2) : Colors.transparent,
         borderRadius: BorderRadius.circular(12),
-        border: active ? Border.all(color: Colors.white.withOpacity(0.3)) : null,
+        border: active ? Border.all(color: Colors.white.withOpacity(0.4)) : null,
       ),
       child: Row(
         children: [
-          Icon(icon, color: active ? Colors.white : Colors.white.withOpacity(0.7), size: 22),
+          Icon(icon, color: active ? Colors.white : Colors.white.withOpacity(0.8), size: 22),
           const SizedBox(width: 16),
           Text(title,
               style: TextStyle(
-                  color: active ? Colors.white : Colors.white.withOpacity(0.7),
+                  color: active ? Colors.white : Colors.white.withOpacity(0.8),
                   fontSize: 16,
                   fontWeight: active ? FontWeight.w600 : FontWeight.w400,
                   letterSpacing: 0.5)),
@@ -1581,40 +1681,34 @@ class _Sidebar extends StatelessWidget {
   Widget _userInfo(String username, String role) {
     return Container(
       margin: const EdgeInsets.only(bottom: 30),
-      padding: const EdgeInsets.all(10),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white.withOpacity(0.2)),
+        color: Colors.white.withOpacity(0.15),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.white.withOpacity(0.3)),
       ),
       child: Row(
         children: [
           CircleAvatar(
-            radius: 16,
-            backgroundColor: Colors.white.withOpacity(0.2),
+            radius: 18,
+            backgroundColor: Colors.white.withOpacity(0.3),
             child: Text(
               username.isNotEmpty ? username[0].toUpperCase() : 'U',
-              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 10),
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
               Text(username,
-                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 12),
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
                   overflow: TextOverflow.ellipsis,
                   maxLines: 1),
               Text(role,
-                  style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 10),
+                  style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 11),
                   overflow: TextOverflow.ellipsis,
                   maxLines: 1),
             ]),
-          ),
-          IconButton(
-            onPressed: () {},
-            icon: Icon(Icons.settings, color: Colors.white.withOpacity(0.8), size: 16),
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
           ),
         ],
       ),
@@ -1627,23 +1721,6 @@ class _Sidebar extends StatelessWidget {
 const TextStyle _thStyle =
     TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: Color(0xFF374151), letterSpacing: 0.5);
 
-extension _Slice3 on List<Color> {
-  static List<List<Color>> slices3(List<Color> src) {
-    final out = <List<Color>>[];
-    for (int i = 0; i + 2 < src.length; i += 3) {
-      out.add([src[i], src[i + 1], src[i + 2]]);
-    }
-    return out;
-  }
-}
-
-extension _ColorListExt on List<Color> {
-  static List<List<Color>> get _noop => [];
-  // ignore: unused_element
-  static List<List<Color>> slices(int size) => _noop;
-}
-
-// Helper to split flat color list into triplets
 extension on List<Color> {
   List<List<Color>> slices(int size) {
     final out = <List<Color>>[];
