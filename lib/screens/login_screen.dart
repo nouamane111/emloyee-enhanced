@@ -31,6 +31,17 @@ class _LoginScreenState extends State<LoginScreen>
   late Animation<double> _cardOpacity;
   late Animation<Offset> _cardOffset;
 
+  double _responsiveValue({
+    required double width,
+    required double small,
+    required double medium,
+    required double large,
+  }) {
+    if (width < 900) return small;
+    if (width < 1250) return medium;
+    return large;
+  }
+
   void _login() async {
     final usernameInput = _usernameController.text.trim();
     final password = _passwordController.text;
@@ -90,6 +101,8 @@ class _LoginScreenState extends State<LoginScreen>
           supervisorId: supervisorId,
         );
 
+        if (!mounted) return;
+
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(
@@ -148,7 +161,7 @@ class _LoginScreenState extends State<LoginScreen>
     );
 
     _cardOffset = Tween<Offset>(
-      begin: const Offset(0, 0.035),
+      begin: const Offset(0, 0.025),
       end: Offset.zero,
     ).animate(
       CurvedAnimation(
@@ -172,107 +185,185 @@ class _LoginScreenState extends State<LoginScreen>
 
   @override
   Widget build(BuildContext context) {
-    final size = MediaQuery.of(context).size;
-    final isCompact = size.width < 920;
-
     return Scaffold(
       backgroundColor: const Color(0xFF001529),
-      body: Stack(
-        children: [
-          Positioned.fill(
-            child: Image.asset(
-              'assets/login.png',
-              fit: BoxFit.cover,
-            ),
-          ),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final width = constraints.maxWidth;
+          final height = constraints.maxHeight;
 
-          Positioned.fill(
-            child: Container(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    const Color(0xFF003DA5).withOpacity(0.30),
-                    const Color(0xFF005091).withOpacity(0.22),
-                    const Color(0xFF001529).withOpacity(0.35),
-                  ],
+          final isCompact = width < 920;
+          final isShort = height < 720;
+
+          final horizontalPadding = _responsiveValue(
+            width: width,
+            small: 20,
+            medium: 38,
+            large: 56,
+          );
+
+          final verticalPadding = isShort ? 18.0 : 28.0;
+
+          return Stack(
+            children: [
+              Positioned.fill(
+                child: Image.asset(
+                  'assets/login.png',
+                  fit: BoxFit.cover,
                 ),
               ),
-            ),
-          ),
 
-          Positioned.fill(
-            child: Container(
-              decoration: BoxDecoration(
-                gradient: RadialGradient(
-                  center: const Alignment(-0.60, -0.40),
-                  radius: 0.95,
-                  colors: [
-                    const Color(0xFF74C8E8).withOpacity(0.10),
-                    Colors.transparent,
-                  ],
+              Positioned.fill(
+                child: Container(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        const Color(0xFF003DA5).withOpacity(0.24),
+                        const Color(0xFF005091).withOpacity(0.18),
+                        const Color(0xFF001529).withOpacity(0.32),
+                      ],
+                    ),
+                  ),
                 ),
               ),
-            ),
-          ),
 
-          SafeArea(
-            child: Center(
-              child: SingleChildScrollView(
-                padding: EdgeInsets.symmetric(
-                  horizontal: isCompact ? 20 : 56,
-                  vertical: 28,
+              Positioned.fill(
+                child: Container(
+                  decoration: BoxDecoration(
+                    gradient: RadialGradient(
+                      center: const Alignment(-0.60, -0.40),
+                      radius: 0.95,
+                      colors: [
+                        const Color(0xFF74C8E8).withOpacity(0.09),
+                        Colors.transparent,
+                      ],
+                    ),
+                  ),
                 ),
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 1360),
-                  child: isCompact
-                      ? Column(
-                          children: [
-                            _buildBrandPanel(compact: true),
-                            const SizedBox(height: 28),
-                            _buildLoginCard(compact: true),
-                          ],
-                        )
-                      : Row(
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          children: [
+              ),
+
+              SafeArea(
+                child: Center(
+                  child: SingleChildScrollView(
+                    padding: EdgeInsets.symmetric(
+                      horizontal: horizontalPadding,
+                      vertical: verticalPadding,
+                    ),
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxWidth: isCompact ? 620 : 1220,
+                        minHeight: isCompact ? 0 : height - 80,
+                      ),
+                      child: isCompact
+                          ? Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                _buildBrandPanel(
+                                  compact: true,
+                                  screenWidth: width,
+                                  screenHeight: height,
+                                ),
+                                SizedBox(height: isShort ? 20 : 28),
+                                _buildLoginCard(
+                                  compact: true,
+                                  screenWidth: width,
+                                  screenHeight: height,
+                                ),
+                              ],
+                            )
+                          : Row(
+                              crossAxisAlignment: CrossAxisAlignment.center,
+                              children: [
+                                Expanded(
+                                  flex: width < 1150 ? 5 : 6,
+                                  child: _buildBrandPanel(
+                                    screenWidth: width,
+                                    screenHeight: height,
+                                  ),
+                                ),
+                                SizedBox(
+                                  width: _responsiveValue(
+                                    width: width,
+                                    small: 28,
+                                    medium: 48,
+                                    large: 72,
+                                  ),
+                                ),
                             Expanded(
-                              flex: 6,
-                              child: _buildBrandPanel(),
-                            ),
-                            const SizedBox(width: 130),
-                            Expanded(
-                              flex: 5,
-                              child: Transform.translate(
-                                offset: const Offset(105, 0),
-                                child: Align(
-                                  alignment: Alignment.centerRight,
-                                  child: _buildLoginCard(),
+                              flex: width < 1150 ? 5 : 5,
+                              child: Align(
+                                alignment: Alignment.centerRight,
+                                child: Transform.translate(
+                                  offset: Offset(
+                                    width < 1150 ? 15 : 35, // move right depending on screen size
+                                    0,
+                                  ),
+                                  child: _buildLoginCard(
+                                    screenWidth: width,
+                                    screenHeight: height,
+                                  ),
                                 ),
                               ),
                             ),
-                          ],
-                        ),
+                              ],
+                            ),
+                    ),
+                  ),
                 ),
               ),
-            ),
-          ),
-        ],
+            ],
+          );
+        },
       ),
     );
   }
 
-  Widget _buildBrandPanel({bool compact = false}) {
+  Widget _buildBrandPanel({
+    bool compact = false,
+    required double screenWidth,
+    required double screenHeight,
+  }) {
+    final isShort = screenHeight < 720;
+
+    final topPadding = compact
+        ? 0.0
+        : _responsiveValue(
+            width: screenWidth,
+            small: 40,
+            medium: 58,
+            large: 78,
+          );
+
+    final titleSize = compact
+        ? 26.0
+        : _responsiveValue(
+            width: screenWidth,
+            small: 28,
+            medium: 30,
+            large: 32,
+          );
+
+    final headlineSize = compact
+        ? 34.0
+        : _responsiveValue(
+            width: screenWidth,
+            small: 38,
+            medium: 46,
+            large: 52,
+          );
+
     return FadeTransition(
       opacity: _cardOpacity,
       child: SlideTransition(
         position: _cardOffset,
         child: Padding(
-          padding: EdgeInsets.only(top: compact ? 0 : 120),
+          padding: EdgeInsets.only(top: isShort ? 20 : topPadding),
           child: Column(
             crossAxisAlignment:
                 compact ? CrossAxisAlignment.center : CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
             children: [
               Text(
                 'PMI LEAP',
@@ -281,31 +372,31 @@ class _LoginScreenState extends State<LoginScreen>
                   color: const Color(0xFF74C8E8),
                   fontWeight: FontWeight.w900,
                   letterSpacing: 0.5,
-                  fontSize: compact ? 26 : 32,
+                  fontSize: titleSize,
                 ),
               ),
-              const SizedBox(height: 34),
+              SizedBox(height: isShort ? 22 : 30),
               Text(
                 'Performance intelligence,\ncrafted for field\nexcellence.',
                 textAlign: compact ? TextAlign.center : TextAlign.left,
                 style: TextStyle(
                   color: Colors.white,
-                  fontSize: compact ? 34 : 54,
-                  height: 1.02,
-                  letterSpacing: -1.4,
+                  fontSize: headlineSize,
+                  height: 1.04,
+                  letterSpacing: -1.1,
                   fontWeight: FontWeight.w900,
                 ),
               ),
-              const SizedBox(height: 22),
+              SizedBox(height: isShort ? 16 : 22),
               ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: compact ? 500 : 620),
+                constraints: BoxConstraints(maxWidth: compact ? 500 : 590),
                 child: Text(
                   'An internal workspace for assessments, profiles, and performance analytics.',
                   textAlign: compact ? TextAlign.center : TextAlign.left,
                   style: TextStyle(
                     color: Colors.white.withOpacity(0.74),
                     fontSize: compact ? 14 : 16,
-                    height: 1.6,
+                    height: 1.55,
                     fontWeight: FontWeight.w400,
                   ),
                 ),
@@ -317,24 +408,30 @@ class _LoginScreenState extends State<LoginScreen>
     );
   }
 
-  Widget _buildLoginCard({bool compact = false}) {
+  Widget _buildLoginCard({
+    bool compact = false,
+    required double screenWidth,
+    required double screenHeight,
+  }) {
     return FadeTransition(
       opacity: _cardOpacity,
       child: SlideTransition(
         position: _cardOffset,
         child: _ProfessionalGlassCard(
           compact: compact,
+          screenWidth: screenWidth,
+          screenHeight: screenHeight,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text(
+              Text(
                 'Welcome back',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   color: Colors.white,
-                  fontSize: 34,
+                  fontSize: compact ? 30 : 32,
                   fontWeight: FontWeight.w900,
-                  letterSpacing: -0.8,
+                  letterSpacing: -0.7,
                 ),
               ),
               const SizedBox(height: 10),
@@ -347,7 +444,7 @@ class _LoginScreenState extends State<LoginScreen>
                   height: 1.4,
                 ),
               ),
-              const SizedBox(height: 34),
+              SizedBox(height: screenHeight < 720 ? 24 : 32),
 
               _GlassTextField(
                 controller: _usernameController,
@@ -361,7 +458,6 @@ class _LoginScreenState extends State<LoginScreen>
               const SizedBox(height: 16),
 
               _GlassTextField(
-                key: ValueKey(_obscurePassword),
                 controller: _passwordController,
                 focusNode: _passwordFocus,
                 hint: 'Password',
@@ -387,7 +483,7 @@ class _LoginScreenState extends State<LoginScreen>
                 ),
               ),
 
-              const SizedBox(height: 26),
+              SizedBox(height: screenHeight < 720 ? 22 : 26),
 
               _LoginButton(
                 isLoading: isLoading,
@@ -406,38 +502,67 @@ class _LoginScreenState extends State<LoginScreen>
 class _ProfessionalGlassCard extends StatelessWidget {
   final Widget child;
   final bool compact;
+  final double screenWidth;
+  final double screenHeight;
 
   const _ProfessionalGlassCard({
     required this.child,
+    required this.screenWidth,
+    required this.screenHeight,
     this.compact = false,
   });
 
+  double _cardWidth() {
+    if (compact) return double.infinity;
+
+    if (screenWidth < 1050) return 410;
+    if (screenWidth < 1250) return 440;
+    if (screenWidth < 1450) return 470;
+    return 500;
+  }
+
+  EdgeInsets _cardPadding() {
+    if (compact) {
+      return const EdgeInsets.symmetric(horizontal: 30, vertical: 36);
+    }
+
+    if (screenHeight < 720) {
+      return const EdgeInsets.symmetric(horizontal: 34, vertical: 34);
+    }
+
+    if (screenWidth < 1200) {
+      return const EdgeInsets.symmetric(horizontal: 36, vertical: 40);
+    }
+
+    return const EdgeInsets.symmetric(horizontal: 42, vertical: 44);
+  }
+
   @override
   Widget build(BuildContext context) {
-    const double radius = 40;
+    const double radius = 38;
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(radius),
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+        filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
         child: Container(
-          width: compact ? double.infinity : 500,
+          width: _cardWidth(),
           padding: const EdgeInsets.all(2),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(radius),
             border: Border.all(
-              color: const Color(0xFF74C8E8).withOpacity(0.18),
-              width: 1.2,
+              color: const Color(0xFF74C8E8).withOpacity(0.17),
+              width: 1.1,
             ),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.36),
-                blurRadius: 46,
-                offset: const Offset(0, 22),
+                color: Colors.black.withOpacity(0.32),
+                blurRadius: 42,
+                offset: const Offset(0, 20),
               ),
               BoxShadow(
-                color: const Color(0xFF74C8E8).withOpacity(0.10),
-                blurRadius: 60,
+                color: const Color(0xFF74C8E8).withOpacity(0.09),
+                blurRadius: 54,
                 offset: const Offset(0, 0),
               ),
             ],
@@ -445,20 +570,17 @@ class _ProfessionalGlassCard extends StatelessWidget {
           child: ClipRRect(
             borderRadius: BorderRadius.circular(radius - 2),
             child: Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 42,
-                vertical: 44,
-              ),
+              padding: _cardPadding(),
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(radius - 2),
-                color: const Color(0xFF003DA5).withOpacity(0.22),
+                color: const Color(0xFF003DA5).withOpacity(0.18),
                 gradient: LinearGradient(
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                   colors: [
-                    Colors.white.withOpacity(0.08),
-                    const Color(0xFF005091).withOpacity(0.24),
-                    Colors.black.withOpacity(0.10),
+                    Colors.white.withOpacity(0.07),
+                    const Color(0xFF005091).withOpacity(0.20),
+                    Colors.black.withOpacity(0.09),
                   ],
                 ),
               ),
@@ -471,19 +593,19 @@ class _ProfessionalGlassCard extends StatelessWidget {
                           borderRadius: BorderRadius.circular(radius - 8),
                           border: Border(
                             top: BorderSide(
-                              color: const Color(0xFF74C8E8).withOpacity(0.22),
+                              color: const Color(0xFF74C8E8).withOpacity(0.20),
                               width: 1,
                             ),
                             left: BorderSide(
-                              color: Colors.white.withOpacity(0.10),
+                              color: Colors.white.withOpacity(0.08),
                               width: 1,
                             ),
                             right: BorderSide(
-                              color: Colors.white.withOpacity(0.04),
+                              color: Colors.white.withOpacity(0.03),
                               width: 1,
                             ),
                             bottom: BorderSide(
-                              color: Colors.black.withOpacity(0.12),
+                              color: Colors.black.withOpacity(0.10),
                               width: 1,
                             ),
                           ),
@@ -496,11 +618,11 @@ class _ProfessionalGlassCard extends StatelessWidget {
                     right: -45,
                     child: IgnorePointer(
                       child: Container(
-                        height: 155,
-                        width: 155,
+                        height: 145,
+                        width: 145,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color: const Color(0xFF74C8E8).withOpacity(0.10),
+                          color: const Color(0xFF74C8E8).withOpacity(0.08),
                         ),
                       ),
                     ),
@@ -510,11 +632,11 @@ class _ProfessionalGlassCard extends StatelessWidget {
                     left: -35,
                     child: IgnorePointer(
                       child: Container(
-                        height: 120,
-                        width: 240,
+                        height: 110,
+                        width: 230,
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(999),
-                          color: Colors.white.withOpacity(0.03),
+                          color: Colors.white.withOpacity(0.025),
                         ),
                       ),
                     ),
@@ -532,7 +654,7 @@ class _ProfessionalGlassCard extends StatelessWidget {
 
 // ==================== GLASS TEXT FIELD ====================
 
-class _GlassTextField extends StatelessWidget {
+class _GlassTextField extends StatefulWidget {
   final TextEditingController controller;
   final FocusNode focusNode;
   final String hint;
@@ -555,32 +677,38 @@ class _GlassTextField extends StatelessWidget {
   });
 
   @override
+  State<_GlassTextField> createState() => _GlassTextFieldState();
+}
+
+class _GlassTextFieldState extends State<_GlassTextField> {
+  @override
   Widget build(BuildContext context) {
     return TextField(
-      controller: controller,
-      focusNode: focusNode,
-      obscureText: obscureText,
-      enableSuggestions: !obscureText,
-      autocorrect: !obscureText,
-      textInputAction: textInputAction,
-      onSubmitted: onSubmitted,
+      key: ValueKey('${widget.hint}_${widget.obscureText}'),
+      controller: widget.controller,
+      focusNode: widget.focusNode,
+      obscureText: widget.obscureText,
+      enableSuggestions: !widget.obscureText,
+      autocorrect: !widget.obscureText,
+      textInputAction: widget.textInputAction,
+      onSubmitted: widget.onSubmitted,
       cursorColor: const Color(0xFF74C8E8),
       style: const TextStyle(
         color: Colors.white,
         fontWeight: FontWeight.w500,
       ),
       decoration: InputDecoration(
-        hintText: hint,
+        hintText: widget.hint,
         hintStyle: TextStyle(
           color: Colors.white.withOpacity(0.48),
           fontWeight: FontWeight.w500,
         ),
         prefixIcon: Icon(
-          icon,
+          widget.icon,
           color: const Color(0xFF74C8E8).withOpacity(0.75),
           size: 21,
         ),
-        suffixIcon: suffix,
+        suffixIcon: widget.suffix,
         filled: true,
         fillColor: Colors.black.withOpacity(0.20),
         contentPadding: const EdgeInsets.symmetric(

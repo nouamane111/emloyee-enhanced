@@ -13,40 +13,122 @@ conn = psycopg2.connect(
 cur = conn.cursor()
 
 try:
-    print("🗑️  Clearing existing assessments...")
-    cur.execute("DELETE FROM assessment_category_outcome")
-    cur.execute("DELETE FROM assessmentanswers")
-    cur.execute("DELETE FROM assessments")
-    conn.commit()
-    print("✅ Cleared all assessments")
-
-    # Get Nouhaila's profile ID
-    cur.execute("SELECT id FROM profiles WHERE LOWER(full_name) LIKE '%nouhaila%elhamrity%'")
-    nouhaila_row = cur.fetchone()
-    if not nouhaila_row:
-        print("❌ Nouhaila Elhamrity not found in profiles!")
+    print("🔍 Looking for Mohamed Ghouati...")
+    
+    # Find Mohamed Ghouati's profile ID
+    cur.execute("""
+        SELECT id, full_name, position, role, subrole 
+        FROM profiles 
+        WHERE LOWER(full_name) LIKE '%mohamed%ghouati%'
+    """)
+    mohamed_row = cur.fetchone()
+    
+    if not mohamed_row:
+        print("❌ Mohamed Ghouati not found in profiles!")
         exit()
     
-    nouhaila_id = nouhaila_row[0]
-    print(f"✅ Found Nouhaila ID: {nouhaila_id}")
-
-    # Templates to rotate through (SFP Direct retail templates)
-    template_ids = [38, 37, 41, 36]  # LAU Direct, LAS Direct, SE Direct HOW, Supervisor Direct
+    mohamed_id, full_name, position, role, subrole = mohamed_row
+    print(f"✅ Found: {full_name} (ID: {mohamed_id})")
+    print(f"   Position: {position}")
+    print(f"   Role: {role}")
+    print(f"   Subrole: {subrole}")
     
-    # Create 15 assessments spread from Jan to May 2025
-    start_date = datetime(2025, 1, 15)
-    end_date = datetime(2025, 5, 15)
-    date_increment = (end_date - start_date) / 14  # 15 assessments = 14 gaps
-
-    for i in range(15):
-        template_id = template_ids[i % len(template_ids)]
+    # Clear existing assessments for Mohamed
+    print(f"\n🗑️  Clearing existing assessments for {full_name}...")
+    cur.execute("""
+        DELETE FROM assessment_category_outcome 
+        WHERE assessee_id = %s
+    """, (mohamed_id,))
+    
+    cur.execute("""
+        DELETE FROM assessmentanswers 
+        WHERE assessment_id IN (
+            SELECT id FROM assessments WHERE assessee_id = %s
+        )
+    """, (mohamed_id,))
+    
+    cur.execute("""
+        DELETE FROM assessments 
+        WHERE assessee_id = %s
+    """, (mohamed_id,))
+    
+    conn.commit()
+    print("✅ Cleared existing assessments")
+    
+    # ✅ SIMPLIFIED FIX: Just use hardcoded templates directly
+    print(f"\n🔍 Using SFP templates for Sales Expert...")
+    
+    # Use known SFP templates
+    template_ids_to_check = [36, 37, 38, 41]
+    
+    # Verify these templates exist
+    cur.execute("""
+        SELECT id, name, role, subrole, position
+        FROM assessmenttemplates
+        WHERE id IN (36, 37, 38, 41)
+        ORDER BY id
+    """)
+    templates = cur.fetchall()
+    
+    if not templates:
+        print("❌ Default templates not found! Looking for any SFP templates...")
+        cur.execute("""
+            SELECT id, name, role, subrole, position
+            FROM assessmenttemplates
+            WHERE role = 'SFP'
+            ORDER BY id
+            LIMIT 4
+        """)
+        templates = cur.fetchall()
+    
+    if not templates:
+        print("❌ No templates found at all!")
+        print("\n📋 Available templates:")
+        cur.execute("SELECT id, name, role, subrole, position FROM assessmenttemplates ORDER BY id")
+        for t in cur.fetchall():
+            print(f"   ID {t[0]}: {t[1]} ({t[2]} {t[3]} - {t[4]})")
+        exit()
+    
+    print(f"✅ Found {len(templates)} templates:")
+    template_ids = []
+    for t in templates:
+        print(f"   ID {t[0]}: {t[1]} ({t[2]} {t[3]} - {t[4]})")
+        template_ids.append(t[0])
+    
+    # Create assessments from May 2024 to May 2025 (1 year)
+    start_date = datetime(2024, 5, 20)
+    end_date = datetime(2025, 5, 20)
+    num_assessments = 24
+    date_increment = (end_date - start_date) / (num_assessments - 1)
+    
+    print(f"\n📝 Creating {num_assessments} assessments from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+    
+    # Performance progression: 65% → 85% (improving)
+    performance_start = 65.0
+    performance_end = 85.0
+    performance_increment = (performance_end - performance_start) / (num_assessments - 1)
+    
+    for i in range(num_assessments):
         assessment_date = start_date + (date_increment * i)
+        
+        # Calculate target score
+        target_score_pct = performance_start + (performance_increment * i) + random.uniform(-3, 3)
+        target_score_pct = max(60, min(95, target_score_pct))
+        
+        # Rotate through templates
+        template_id = template_ids[i % len(template_ids)]
         
         # Get template info
         cur.execute("SELECT name FROM assessmenttemplates WHERE id = %s", (template_id,))
-        template_name = cur.fetchone()[0]
+        template_row = cur.fetchone()
+        if not template_row:
+            print(f"⚠️  Template {template_id} not found, skipping...")
+            continue
+        template_name = template_row[0]
         
-        print(f"\n📝 Creating assessment {i+1}/15 - {template_name} - {assessment_date.strftime('%Y-%m-%d')}")
+        print(f"\n📋 Assessment {i+1}/{num_assessments} - {assessment_date.strftime('%Y-%m-%d')}")
+        print(f"   Template: {template_name} (ID: {template_id})")
+        print(f"   Target: {target_score_pct:.1f}%")
         
         # Get all questions for this template
         cur.execute("""
@@ -59,18 +141,20 @@ try:
         questions = cur.fetchall()
         
         if not questions:
-            print(f"⚠️  No questions found for template {template_id}")
+            print(f"   ⚠️  No questions found for template {template_id}, skipping...")
             continue
         
-        # Target score for this assessment (75-95%)
-        target_score_pct = random.uniform(75, 95)
-        target_avg_on_3 = (target_score_pct / 100) * 3
-        
-        # Calculate how many Oui/Partiellement/Non to achieve target
         total_q = len(questions)
+        print(f"   Questions: {total_q}")
+        
+        # Calculate answer distribution
         oui_count = int(total_q * (target_score_pct / 100))
-        partial_count = int(total_q * 0.15)  # ~15% partial
+        partial_count = int(total_q * 0.15)
         non_count = total_q - oui_count - partial_count
+        
+        if non_count < 0:
+            partial_count += non_count
+            non_count = 0
         
         # Create assessment
         cur.execute("""
@@ -78,14 +162,17 @@ try:
                 template_id, assessor_name, assessee_name, assessee_id,
                 started_at, completed_at, final_score, comment
             )
-            VALUES (%s, 'Ali Loutaty', 'nouhaila elhamrity', %s, %s, %s, NULL, '')
+            VALUES (%s, 'Chouaib ATIF', %s, %s, %s, %s, NULL, '')
             RETURNING id
-        """, (template_id, nouhaila_id, assessment_date, assessment_date))
+        """, (template_id, full_name, mohamed_id, assessment_date, assessment_date))
         
         assessment_id = cur.fetchone()[0]
         
-        # Prepare answer distribution
+        # Prepare answers
         answers = ['Oui'] * oui_count + ['Partiellement'] * partial_count + ['Non'] * non_count
+        while len(answers) < total_q:
+            answers.append('Oui')
+        answers = answers[:total_q]
         random.shuffle(answers)
         
         # Per-category tracking
@@ -95,7 +182,7 @@ try:
         
         # Insert answers
         for idx, (q_id, cat_id, cat_title) in enumerate(questions):
-            answer = answers[idx] if idx < len(answers) else 'Oui'
+            answer = answers[idx]
             score = score_map[answer]
             
             cur.execute("""
@@ -104,7 +191,6 @@ try:
                 ) VALUES (%s, %s, %s, '', %s, %s)
             """, (assessment_id, q_id, answer, score, cat_id))
             
-            # Track per category
             if cat_id not in per_cat:
                 per_cat[cat_id] = {
                     'title': cat_title,
@@ -132,7 +218,7 @@ try:
             SELECT COALESCE(MAX(attempt_seq), 0) + 1
             FROM assessment_category_outcome
             WHERE assessee_id = %s AND template_id = %s
-        """, (nouhaila_id, template_id))
+        """, (mohamed_id, template_id))
         attempt_seq = cur.fetchone()[0] or 1
         
         # Insert category outcomes
@@ -148,7 +234,7 @@ try:
                     avg_score
                 ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """, (
-                assessment_id, nouhaila_id, 'nouhaila elhamrity',
+                assessment_id, mohamed_id, full_name,
                 template_id, template_name, attempt_seq,
                 cat_id, acc['title'],
                 acc['total_q'], acc['answered_q'],
@@ -156,10 +242,13 @@ try:
                 avg_sc
             ))
         
-        print(f"   ✅ Score: {final_score:.2f}/3 ({(final_score/3*100):.1f}%) - {oui_count} Oui, {partial_count} Partial, {non_count} Non")
+        actual_pct = (final_score / 3) * 100
+        print(f"   ✅ Score: {final_score:.2f}/3 ({actual_pct:.1f}%)")
+        print(f"      {oui_count} Oui, {partial_count} Partial, {non_count} Non")
     
     conn.commit()
-    print("\n🎉 Successfully created 15 assessments for Nouhaila Elhamrity!")
+    print(f"\n🎉 Successfully created {num_assessments} assessments for {full_name}!")
+    print(f"📊 Performance: {performance_start:.1f}% → {performance_end:.1f}% (Improving)")
     
 except Exception as e:
     conn.rollback()
